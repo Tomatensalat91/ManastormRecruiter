@@ -1,0 +1,15 @@
+## Interface: 30300
+## Title: Manastorm Recruiter
+## Notes: Recruitment, roster and rebuild assistant for Ascension Manastorm groups.
+## Author: Tomatensalat91
+## Version: 0.4.0
+## SavedVariables: ManastormRecruiterDB
+## SavedVariablesPerCharacter: ManastormRecruiterCharDB
+
+Core.lua
+Parser.lua
+Roster.lua
+Recruitment.lua
+Manastorm.lua
+Rebuild.lua
+UI.lua

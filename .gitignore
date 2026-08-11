@@ -1,0 +1,20 @@
+# Release output
+dist/
+*.zip
+
+# Local game data and logs
+WTF/
+SavedVariables/
+Logs/
+*.log
+*.bak
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.tmp
