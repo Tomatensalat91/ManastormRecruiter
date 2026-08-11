@@ -32,7 +32,7 @@ The window can also be opened with the movable minimap button.
 
 ## Mission Control Interface
 
-Version 0.5 introduces a focused operations layout instead of exposing every control in one toolbar:
+Version 0.6.8 introduces a focused operations layout instead of exposing every control in one toolbar:
 
 - **Applicants** uses a full-width waiting list with the latest player message visible beside each application.
 - The Applicants workspace is split between private applications and a live public-channel **Chat Scanner** while recruiting.
@@ -42,6 +42,20 @@ Version 0.5 introduces a focused operations layout instead of exposing every con
 - **Open Message Studio** lives inside Settings so message editing stays out of the live navigation.
 - The header status capsule always shows whether the addon is recruiting, building a raid, running Manastorm or rebuilding.
 - The dark cyan-and-gold visual language uses custom flat controls and stable geometry designed for both native Ascension UI and ElvUI.
+
+### Screenshots
+
+#### Applicants and Chat Scanner
+
+![Applicants workspace with Waiting players and Chat Scanner](docs/images/applicants-chat-scanner.png)
+
+#### Raid Groups
+
+![Raid Groups workspace with role and Aura controls](docs/images/raid-groups.png)
+
+#### Settings
+
+![Settings workspace with recruitment, raid, automation and message controls](docs/images/settings.png)
 
 ## Recruitment
 
