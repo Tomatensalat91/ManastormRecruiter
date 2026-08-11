@@ -10,6 +10,8 @@ Manastorm Recruiter is an unofficial World of Warcraft addon for Project Ascensi
 
 This community project is not affiliated with Blizzard Entertainment or Project Ascension.
 
+![Manastorm Recruiter raid-building interface](docs/images/manastorm-recruiter-overview.jpg)
+
 ## Installation
 
 1. Download and extract the release ZIP.
