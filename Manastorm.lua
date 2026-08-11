@@ -418,13 +418,13 @@ function MSR:PostLevelStatus()
         return self:LeaveManastormOnly()
     end
     local level = tonumber(UnitLevel("player")) or 0
+    local messageKey = self:GetPlayerLevelMessageKey(level)
     local message = self:BuildLevelStatusMessage(nil, level)
-    if message == "" then
+    if self:GetMessageRoute(messageKey) ~= "OFF" and message == "" then
         self:PrivateWarning("The level status message is empty. Open Edit messages and configure it first.")
         return false
     end
-    if not self:SendGroupChat(message) then return false end
-    self:Print(string.format("Level %d roster information posted to group chat.", level))
+    if not self:SendConfiguredMessage(messageKey, message) then return false end
     local nextPhase = self:IsInManastorm() and "leaving-manastorm" or "leaving-group"
     self.runtime.pendingLeave = {
         phase = "waiting-after-post",
@@ -514,7 +514,7 @@ function MSR:ScanForLevel60()
                 player = member.name,
                 level = level,
             })
-            if self:SendRaidWarning(message) then self:LocalWarning(message) end
+            self:SendConfiguredMessage("level59Warning", message)
         end
         if level >= 60 and not self.char.session.level60Alerted[member.key] then
             self.char.session.level60Alerted[member.key] = true
@@ -523,7 +523,7 @@ function MSR:ScanForLevel60()
                 player = member.name,
                 level = level,
             })
-            if self:SendRaidWarning(message) then self:LocalWarning(message) end
+            self:SendConfiguredMessage("level60Warning", message)
         end
     end
 end

@@ -55,7 +55,7 @@ function MSR:BeginRebuild()
         startedAt = time(),
         stage = "removing",
     }
-    self:SendRaidWarning(self:BuildConfiguredMessage("rebuildAnnouncement"))
+    self:SendConfiguredMessage("rebuildAnnouncement", self:BuildConfiguredMessage("rebuildAnnouncement"))
     self.runtime.rebuild = {
         phase = "countdown",
         snapshot = removalSnapshot,

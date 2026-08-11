@@ -1,0 +1,4 @@
+-- Compatibility file for Ascension clients that cached the v0.6.2 TOC list.
+-- The scanner implementation now lives in Recruitment.lua, which is part of
+-- every historical Manastorm Recruiter load order. This file intentionally
+-- performs no work and can safely be loaded by an older cached file list.

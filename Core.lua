@@ -1,7 +1,7 @@
 ManastormRecruiter = ManastormRecruiter or {}
 local MSR = ManastormRecruiter
 
-MSR.VERSION = "0.4.0"
+MSR.VERSION = "0.6.8"
 MSR.PARSER_VERSION = 5
 MSR.PREFIX = "|cff65d5ff[MSR]|r "
 MSR.ROLE_ORDER = { "TANK", "HEAL", "DPS" }
@@ -41,6 +41,17 @@ local MESSAGE_DEFAULTS = {
 }
 MSR.MESSAGE_DEFAULTS = MESSAGE_DEFAULTS
 
+local MESSAGE_ROUTE_DEFAULTS = {
+    rosterSummary = "RAID",
+    rebuildAnnouncement = "RAID_WARNING",
+    level60Warning = "RAID_WARNING",
+    level59Warning = "RAID_WARNING",
+    level60StatusPost = "RAID",
+    level59StatusPost = "RAID",
+    belowLevel59StatusPost = "RAID",
+}
+MSR.MESSAGE_ROUTE_DEFAULTS = MESSAGE_ROUTE_DEFAULTS
+
 local DEFAULTS = {
     version = 1,
     settings = {
@@ -59,6 +70,7 @@ local DEFAULTS = {
         },
         recruitmentFormatVersion = 2,
         messages = MESSAGE_DEFAULTS,
+        messageRoutes = MESSAGE_ROUTE_DEFAULTS,
     },
 }
 
@@ -77,6 +89,8 @@ local CHAR_DEFAULTS = {
         lastRebuildRoster = {},
         needsRebuild = false,
         whisperHistory = {},
+        chatScanEntries = {},
+        chatScanOrder = {},
         rebuildRecovery = { active = false },
     },
 }
@@ -218,6 +232,42 @@ function MSR:MigrateLevel60StatusTemplate()
         return true
     end
     return false
+end
+
+function MSR:GetMessageRoute(key)
+    local default = MESSAGE_ROUTE_DEFAULTS[key]
+    if not default then return nil end
+    local routes = self.db and self.db.settings and self.db.settings.messageRoutes
+    local route = routes and routes[key]
+    if route == "RAID" or route == "RAID_WARNING" or route == "LOCAL" or route == "OFF" then
+        return route
+    end
+    return default
+end
+
+function MSR:SetMessageRoute(key, route)
+    if not MESSAGE_ROUTE_DEFAULTS[key] then return false end
+    route = tostring(route or "OFF")
+    if route ~= "RAID" and route ~= "RAID_WARNING" and route ~= "LOCAL" and route ~= "OFF" then
+        return false
+    end
+    self.db.settings.messageRoutes = self.db.settings.messageRoutes or {}
+    self.db.settings.messageRoutes[key] = route
+    return true
+end
+
+function MSR:SendConfiguredMessage(key, message)
+    local route = self:GetMessageRoute(key)
+    if not route then return false, nil end
+    if route == "OFF" then return true, route end
+    message = self.PrepareChatMessage and self:PrepareChatMessage(message) or tostring(message or "")
+    if message == "" then return false, route end
+    if route == "LOCAL" then
+        self:Print(message)
+        return true, route
+    end
+    if route == "RAID_WARNING" then return self:SendRaidWarning(message), route end
+    return self:SendGroupChat(message), route
 end
 
 function MSR:MigrateLeaveStatusTemplates()
@@ -467,6 +517,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         self:RegisterEvent("PLAYER_LOGIN")
         self:RegisterEvent("PLAYER_ENTERING_WORLD")
         self:RegisterEvent("CHAT_MSG_WHISPER")
+        self:RegisterEvent("CHAT_MSG_CHANNEL")
         self:RegisterEvent("CHAT_MSG_SYSTEM")
         self:RegisterEvent("CHAT_MSG_PARTY")
         self:RegisterEvent("CHAT_MSG_PARTY_LEADER")
@@ -492,6 +543,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "CHAT_MSG_WHISPER" then
         local message, sender = ...
         MSR:HandleWhisper(message, sender)
+    elseif event == "CHAT_MSG_CHANNEL" then
+        local message, sender, _, channelName, _, _, _, channelNumber, channelBaseName = ...
+        if type(MSR.HandlePublicChannelMessage) == "function" then
+            MSR:HandlePublicChannelMessage(message, sender, channelName, channelNumber, channelBaseName)
+        end
     elseif event == "CHAT_MSG_SYSTEM" then
         local message = tostring((...))
         local declinedName = message:match("^(.+) declines your group invitation")

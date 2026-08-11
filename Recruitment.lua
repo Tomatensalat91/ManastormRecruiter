@@ -48,26 +48,10 @@ function MSR:BuildRaidRosterSummary(roster)
 end
 
 function MSR:PostRaidRosterSummary()
-    local inRaid = GetNumRaidMembers and GetNumRaidMembers() > 0
-    local inParty = GetNumPartyMembers and GetNumPartyMembers() > 0
-    if not inRaid and not inParty then
-        self:PrivateWarning("You must be in a group to post the roster summary.")
-        return false
-    end
-    if type(SendChatMessage) ~= "function" then
-        self:PrivateWarning("Raid chat is unavailable.")
-        return false
-    end
     local message = self:BuildRaidRosterSummary()
-    local chatType = inRaid and "RAID" or "PARTY"
-    local ok, result = pcall(SendChatMessage, message, chatType)
-    if not ok or result == false then
-        local detail = not ok and (": " .. tostring(result)) or "."
-        self:PrivateWarning("The roster summary could not be posted to group chat" .. detail)
-        return false
-    end
-    self:Print("Current role and Aura requirements posted to group chat.")
-    return true
+    local sent, route = self:SendConfiguredMessage("rosterSummary", message)
+    if not sent then self:PrivateWarning("The roster summary could not be delivered using its configured output.") end
+    return sent, route
 end
 
 function MSR:RecordGroupChat(event, message, sender)
@@ -194,9 +178,20 @@ function MSR:PostRecruitment(isAutomatic)
     return true
 end
 function MSR:StartRecruitment()
-    if not self:PostRecruitment(false) then return false end
+    local valid, reason = self:ValidateSettings()
+    if not valid then self:LocalWarning(reason) return false end
+    if self:IsInManastorm() then
+        self:LocalWarning("Recruitment automation is unavailable inside Manastorm.")
+        return false
+    end
+    self.char.session.listening = true
     self.db.settings.autoPost = true
-    self:Print("Recruitment started. Automatic posts and applicant whispers are active.")
+    self.char.session.lastPostAt = time()
+    self.runtime.lastAutoPostAttempt = nil
+    self:Print(string.format(
+        "Recruitment automation enabled. Applicant whispers are active; the first automatic post is due in %d seconds.",
+        tonumber(self.db.settings.autoPostInterval) or 90
+    ))
     self:RefreshUI()
     return true
 end
@@ -313,6 +308,8 @@ function MSR:ClearSession()
     session.level60Alerted = {}
     session.lastRebuildRoster = {}
     session.whisperHistory = {}
+    session.chatScanEntries = {}
+    session.chatScanOrder = {}
     session.rebuildRecovery = { active = false }
     session.lastPostAt = 0
     session.listening = false
@@ -377,4 +374,141 @@ function MSR:GetApplicantsForDisplay(view)
         end)
     end
     return rows
+end
+
+-- Keep the public chat scanner in this long-standing addon file so Ascension
+-- clients that cache an older TOC file list can pick up the feature via /reload.
+local function CleanChatScanWords(message)
+    local clean = string.lower(tostring(message or ""))
+    clean = clean:gsub("[^%a%d]+", " "):gsub("%s+", " ")
+    return " " .. clean .. " "
+end
+
+local function ChatScanHasWord(clean, word)
+    return clean:find(" " .. word .. " ", 1, true) ~= nil
+end
+
+local function ChatScanHasAnyWord(clean, words)
+    for _, word in ipairs(words) do
+        if ChatScanHasWord(clean, word) then return true end
+    end
+    return false
+end
+
+function MSR:IsChatScanCandidate(message)
+    local clean = CleanChatScanWords(message)
+    local mentionsManastorm = ChatScanHasAnyWord(clean, {
+        "ms", "manastorm", "manastorms",
+    })
+    if not mentionsManastorm then return false end
+    return ChatScanHasAnyWord(clean, { "lf", "lfg" })
+end
+
+function MSR:GetChatScanEntries()
+    local session = self.char and self.char.session
+    local entries = {}
+    if not session then return entries end
+    session.chatScanEntries = session.chatScanEntries or {}
+    session.chatScanOrder = session.chatScanOrder or {}
+    for _, key in ipairs(session.chatScanOrder) do
+        local entry = session.chatScanEntries[key]
+        if entry then table.insert(entries, entry) end
+    end
+    return entries
+end
+
+function MSR:HandlePublicChannelMessage(message, sender, channelName, channelNumber, channelBaseName)
+    if not self.char or not self.char.session or not self.char.session.listening then return false end
+    if self:IsInManastorm() or not self:IsChatScanCandidate(message) then return false end
+    local key, shortName = self:NormalizeName(sender)
+    local playerKey = self:NormalizeName(UnitName("player") or "")
+    if key == "" or key == playerKey then return false end
+
+    local role, aura, needsReview, roleMatches = self:ParseApplication(message, false)
+    local session = self.char.session
+    session.chatScanEntries = session.chatScanEntries or {}
+    session.chatScanOrder = session.chatScanOrder or {}
+    local entry = session.chatScanEntries[key] or { key = key, name = shortName }
+    entry.name = shortName
+    entry.message = tostring(message or "")
+    entry.role = role
+    entry.aura = aura
+    entry.needsReview = needsReview
+    entry.roleMatches = roleMatches
+    entry.level = self:ParseApplicantLevel(message)
+    entry.channelName = tostring(channelBaseName or channelName or "Channel")
+    entry.channelNumber = tonumber(channelNumber)
+    entry.updatedAt = time()
+    session.chatScanEntries[key] = entry
+
+    for index = #session.chatScanOrder, 1, -1 do
+        if session.chatScanOrder[index] == key then table.remove(session.chatScanOrder, index) end
+    end
+    table.insert(session.chatScanOrder, 1, key)
+    while #session.chatScanOrder > 50 do
+        local removedKey = table.remove(session.chatScanOrder)
+        session.chatScanEntries[removedKey] = nil
+    end
+    self:RefreshUI()
+    return true
+end
+
+function MSR:ClearChatScan()
+    if not self.char or not self.char.session then return end
+    self.char.session.chatScanEntries = {}
+    self.char.session.chatScanOrder = {}
+    self:RefreshUI()
+end
+
+function MSR:InviteChatScanEntry(entry)
+    if not entry then return false end
+    if not self:IsGroupLeader() then
+        self:LocalWarning("You must be group leader to invite players.")
+        return false
+    end
+    local applicant = self:EnsureApplicant(entry.name)
+    if entry.role and entry.role ~= "UNKNOWN" then applicant.role = entry.role end
+    if entry.aura ~= nil then applicant.aura = entry.aura end
+    self:SetApplicantLevel(applicant, entry.level)
+    applicant.message = entry.message or applicant.message
+    applicant.needsReview = applicant.role == "UNKNOWN" or applicant.aura == nil
+    applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
+    applicant.updatedAt = time()
+    applicant.messageHistory = applicant.messageHistory or {}
+    table.insert(applicant.messageHistory, {
+        message = entry.message or "",
+        parsedRole = entry.role,
+        parsedAura = entry.aura,
+        parsedNeedsReview = entry.needsReview,
+        source = "channel",
+        receivedAt = time(),
+    })
+    while #applicant.messageHistory > 20 do table.remove(applicant.messageHistory, 1) end
+
+    if self.runtime.rosterByKey and self.runtime.rosterByKey[applicant.key] then
+        applicant.status = "Joined"
+        self:RefreshUI()
+        return true
+    end
+    if applicant.status == "Invited" then
+        self:LocalWarning(applicant.name .. " already has a pending invite.")
+        return false
+    end
+    local numRaid = GetNumRaidMembers and GetNumRaidMembers() or 0
+    local numParty = GetNumPartyMembers and GetNumPartyMembers() or 0
+    if numRaid == 0 and numParty > 0 and self:GetTargetTotal() > 5 and ConvertToRaid then
+        pcall(ConvertToRaid)
+    end
+    local ok, err = pcall(InviteUnit, applicant.name)
+    if ok then
+        applicant.status = "Invited"
+        applicant.inviteSentAt = time()
+        applicant.inviteReminderSent = false
+        entry.invitedAt = time()
+        self:Print("Chat Scanner invite sent to " .. applicant.name .. ".")
+    else
+        self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. tostring(err))
+    end
+    self:RefreshUI()
+    return ok and true or false
 end

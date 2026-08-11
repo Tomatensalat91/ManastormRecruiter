@@ -10,8 +10,6 @@ Manastorm Recruiter is an unofficial World of Warcraft addon for Project Ascensi
 
 This community project is not affiliated with Blizzard Entertainment or Project Ascension.
 
-![Manastorm Recruiter raid-building interface](docs/images/manastorm-recruiter-overview.jpg)
-
 ## Installation
 
 1. Download and extract the release ZIP.
@@ -23,14 +21,27 @@ The window can also be opened with the movable minimap button.
 
 ## Quick Start
 
-1. Open **Settings** and select the recruitment channel, your role, your Aura status, and the automatic post interval.
+1. Open **Settings** in the Mission Control navigation and select the recruitment channel, your role, your Aura status, and the automatic post interval.
 2. Check the roster targets. The defaults are 2 Tanks, 3 Healers, 10 DPS, 3 Auras, and 15 players.
-3. Click **Recruiting: OFF** to start recruitment posts and listen for applicant whispers.
+3. Click **Auto recruit: OFF** to enable automatic posts and applicant-whisper collection. The first post is sent after the configured interval; the button itself does not post a message.
 4. Review applicants in **Waiting**, correct their role or Aura if needed, and invite or reserve them.
 5. Use **Optimize groups** to arrange Groups 1-3, then optionally run a **Ready Check**.
 6. Click **Start MS Lv 1** to enter Manastorm.
 7. During the run, watch roster warnings and use **Rebuild raid** when level-60 players must be replaced.
 8. Finish with **Post & Leave**.
+
+## Mission Control Interface
+
+Version 0.5 introduces a focused operations layout instead of exposing every control in one toolbar:
+
+- **Applicants** uses a full-width waiting list with the latest player message visible beside each application.
+- The Applicants workspace is split between private applications and a live public-channel **Chat Scanner** while recruiting.
+- **Raid Groups** uses a separate full-width workspace with larger group cards and direct Role/Aura assignment controls.
+- Role assignments use class-style role icons; Aura state uses the bundled Bonus XP icon consistently on both pages.
+- **Settings** groups recruitment signal, raid blueprint, automation, Aura reservations and appearance controls into separate cards.
+- **Open Message Studio** lives inside Settings so message editing stays out of the live navigation.
+- The header status capsule always shows whether the addon is recruiting, building a raid, running Manastorm or rebuilding.
+- The dark cyan-and-gold visual language uses custom flat controls and stable geometry designed for both native Ascension UI and ElvUI.
 
 ## Recruitment
 
@@ -45,6 +56,8 @@ dps yes
 The addon recognizes the role, Aura status, and a level from 1 to 60. It asks for missing information and accepts short follow-ups such as `yes`, `no`, `42`, or `lvl 42`. A missing level does not block an invite.
 
 Automatic replies explain when the raid or role is full, an Aura-reserved slot is unavailable, or the raid is already inside Manastorm. Disable **Auto reply** in Settings if you prefer to answer manually.
+
+While recruitment is running, the Chat Scanner watches public channel messages that combine `MS`, `Manastorm`, or `Manastorms` with `LF` or `LFG`. It ignores `LFM` group advertisements and Loom gear terminology. It keeps the newest post per player, infers role and Aura information when present, and offers a direct Invite action. **Clear scan** removes only public scan results; it does not remove whisper applicants.
 
 The **Waiting** tab provides these actions:
 
@@ -92,6 +105,8 @@ The rebuild state is saved. After `/reload` or a client restart, the addon offer
 
 Settings include roster targets, automatic posting, automatic replies, Aura-slot reservation, window scaling, and editable recruitment, warning, rebuild, and leave messages.
 
+The Message Studio and its editor can be dragged by their background or header. Standalone raid messages provide three compact output controls: `R` for raid/party chat, `!` for raid warning, and `S` for a local system-style message visible only to you. Clicking the active output again disables that message. Recruitment posts remain tied to the configured recruitment channel, applicant replies remain private whispers, and suffix templates inherit the output of their parent message.
+
 Common message placeholders include:
 
 - Missing requirements: `{needed}`, `{tankNeeded}`, `{healNeeded}`, `{dpsNeeded}`, `{auraNeeded}`
@@ -111,7 +126,7 @@ Common message placeholders include:
 
 ## Privacy
 
-The addon has no telemetry, accounts, API keys, or external network requests. It stores settings, customized messages, applicant whispers, roster data, warning state, and rebuild recovery data locally in WoW SavedVariables.
+The addon has no telemetry, accounts, API keys, or external network requests. It stores settings, customized messages, applicant whispers, matched public recruitment posts, roster data, warning state, and rebuild recovery data locally in WoW SavedVariables.
 
 Use **Reset session** or `/msr reset` to clear the current session. To remove all settings, uninstall the addon and delete its `ManastormRecruiter.lua` and `.bak` SavedVariables files from the account and character `WTF` directories. No player data is included in the repository or release packages.
 

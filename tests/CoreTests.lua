@@ -97,10 +97,12 @@ MSR.char.session.listening = false
 assertEqual(MSR:ToggleRecruitment(), true, "recruitment toggle starts")
 assertEqual(MSR.char.session.listening, true, "start enables applicant listening")
 assertEqual(MSR.db.settings.autoPost, true, "start enables automatic recruitment posts")
-assertEqual(recruitmentPosts, 1, "start sends the initial recruitment post")
+assertEqual(recruitmentPosts, 0, "start does not send a recruitment post")
+assertEqual(MSR.char.session.lastPostAt, epochNow, "start begins a fresh automatic-post interval")
 assertEqual(MSR:ToggleRecruitment(), true, "recruitment toggle stops")
 assertEqual(MSR.char.session.listening, false, "stop pauses applicant listening and auto posts")
 assertEqual(MSR.db.settings.autoPost, false, "stop disables automatic recruitment posts")
+assertEqual(recruitmentPosts, 0, "stop does not send a recruitment post")
 GetChannelName = originalGetChannelName
 SendChatMessage = originalSendChatMessage
 
@@ -225,6 +227,21 @@ end
 assertEqual(MSR:SendGroupChat("Hello raid"), true, "embedded chat send")
 assertEqual(sentMessage, "Hello raid", "embedded chat message")
 assertEqual(sentChannel, "RAID", "embedded chat channel")
+assertEqual(MSR:GetMessageRoute("rosterSummary"), "RAID", "roster summary keeps its legacy raid-chat default")
+assertEqual(MSR:GetMessageRoute("level60Warning"), "RAID_WARNING", "level warning keeps its legacy raid-warning default")
+assertEqual(MSR:GetMessageRoute("recruitment"), nil, "recruitment output remains fixed to its recruitment channel")
+local localConfiguredOutput
+local originalPrint = MSR.Print
+MSR.Print = function(_, message) localConfiguredOutput = message end
+assertEqual(MSR:SetMessageRoute("rosterSummary", "LOCAL"), true, "roster route can be changed")
+assertEqual(MSR:SendConfiguredMessage("rosterSummary", "Local roster"), true, "local configured message is delivered")
+assertEqual(localConfiguredOutput, "Local roster", "local configured message remains private")
+localConfiguredOutput = nil
+assertEqual(MSR:SetMessageRoute("rosterSummary", "OFF"), true, "configured message can be disabled")
+assertEqual(MSR:SendConfiguredMessage("rosterSummary", "Hidden roster"), true, "disabled message is intentionally skipped")
+assertEqual(localConfiguredOutput, nil, "disabled message produces no local output")
+assertEqual(MSR:SetMessageRoute("rosterSummary", "RAID"), true, "roster route can be restored")
+MSR.Print = originalPrint
 
 local reminderTarget
 MSR.char.session.applicants.pending = {
@@ -272,6 +289,31 @@ assertEqual(MSR.char.session.applicants.clarify.level, 42, "level-only answer up
 assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, nil, "clarification completes after level")
 assertContains(lastAutomaticReply, "Welcome", "completed clarification receives acceptance reply")
 assertEqual(automaticReplies, 5, "Aura, level, and completion each receive one reply")
+
+MSR.char.session.chatScanEntries = {}
+MSR.char.session.chatScanOrder = {}
+MSR.char.session.order = MSR.char.session.order or {}
+MSR.char.session.listening = true
+assertEqual(MSR:IsChatScanCandidate("LF Manastorm"), true, "LF plus Manastorm is accepted")
+assertEqual(MSR:IsChatScanCandidate("LFG Manastorms"), true, "LFG plus Manastorms is accepted")
+assertEqual(MSR:IsChatScanCandidate("LFM MS need healer"), false, "other groups looking for members are ignored")
+assertEqual(MSR:IsChatScanCandidate("LFG looms dps"), false, "loom gear terms do not identify Manastorm")
+assertEqual(MSR:IsChatScanCandidate("MS need tank healer dps"), false, "roles without LF or LFG are ignored")
+assertEqual(MSR:IsChatScanCandidate("LFG dungeon dps"), false, "LFG without Manastorm is ignored")
+assertEqual(MSR:HandlePublicChannelMessage("LFG MS dps loom", "ScanGuy", "1. Ascension", 1, "Ascension"), true, "public Manastorm post is scanned")
+assertEqual(#MSR:GetChatScanEntries(), 1, "scanner records one candidate")
+assertEqual(MSR:GetChatScanEntries()[1].role, "DPS", "scanner infers public-post role")
+assertEqual(MSR:HandlePublicChannelMessage("new LFG MS dps", "ScanGuy", "1. Ascension", 1, "Ascension"), true, "repeated candidate updates")
+assertEqual(#MSR:GetChatScanEntries(), 1, "repeated player is deduplicated")
+assertEqual(MSR:HandlePublicChannelMessage("WTS materials", "Trader", "2. Trade", 2, "Trade"), false, "unrelated public post is ignored")
+local scannerInviteName
+InviteUnit = function(name) scannerInviteName = name return true end
+local originalIsGroupLeader = MSR.IsGroupLeader
+MSR.IsGroupLeader = function() return true end
+assertEqual(MSR:InviteChatScanEntry(MSR:GetChatScanEntries()[1]), true, "scanner candidate can be invited before Aura review")
+assertEqual(scannerInviteName, "ScanGuy", "scanner invites the detected player")
+assertEqual(MSR.char.session.applicants.scanguy.status, "Invited", "scanner invite enters applicant workflow")
+MSR.IsGroupLeader = originalIsGroupLeader
 
 local originalIsInManastorm = MSR.IsInManastorm
 local lateReplyMessage, lateReplyChannel, lateReplyTarget, lateReplyCount
