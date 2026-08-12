@@ -64,10 +64,10 @@ Applicants can whisper simple English messages such as:
 ```text
 tank aura yes level 42
 heal no aura 37
-dps yes
+dps 42
 ```
 
-The addon recognizes the role, Aura status, and a level from 1 to 60. It asks for missing information and accepts short follow-ups such as `yes`, `no`, `42`, or `lvl 42`. A missing level does not block an invite.
+The addon recognizes the role, Aura status, and a level from 1 to 60. If no Aura is mentioned, the player defaults to **No Aura**; only an explicit Aura statement marks the player as having one. It asks for a missing role or level and accepts short level follow-ups such as `42` or `lvl 42`. A missing level does not block an invite.
 
 Automatic replies explain when the raid or role is full, an Aura-reserved slot is unavailable, or the raid is already inside Manastorm. Disable **Auto reply** in Settings if you prefer to answer manually.
 
@@ -81,6 +81,38 @@ The **Waiting** tab provides these actions:
 - **Release**, **Reinvite**, or reject an applicant.
 
 Players invited outside the addon are added to the editable roster when detected.
+Changing a joined player's Role or Aura automatically recalculates that player's
+target group and moves them after Ascension confirms the roster update; no extra
+group-optimization button is required. Aura coverage across Groups 1-3 takes
+priority, including in a partial raid.
+Changing your own Role or Aura under **Your slot** or directly in **Raid Groups**
+uses the same automatic, roster-confirmed assignment for your own raid member.
+The same confirmed automatic assignment is armed when Manastorm Recruiter sends
+an invite. It waits for acceptance, recalculates against the current raid roster,
+and then moves the joined player without another click.
+The complete automatic assignment feature can be enabled or disabled under
+**Settings > Automation & Replies**. Disabling it also clears waiting moves.
+
+The red/green **Recruit listener** button controls only applicant whispers and
+the public Chat Scanner. **Automatic recruitment posts** is an independent
+setting and runs only while the listener is enabled. When Auto-Post is disabled,
+a persistent **Post recruiting msg** button sends the current recruitment message
+manually without changing the listener state.
+
+`/msr groupstatus` prints the current assignment switch, raid permissions, API
+availability, waiting/active moves, and every member's calculated target group.
+
+The addon never calls `/mt` or `SetPartyAssignment` from automatic invite/group
+events, `OnUpdate`, or rebuild automation because Ascension blocks that protected
+operation without a player action. Once all subgroup moves are confirmed, click
+**Verify groups** once: that same click marks the primary Tank and promotes all
+configured Tanks with `/mt`, matching the original working workflow without an
+Enter confirmation. The normal **MT** button beside each Tank performs the same
+direct, click-triggered assignment for that individual player. It is not a secure
+child frame, so it does not protect or block resizing the main addon window.
+Whenever an automatic subgroup assignment is confirmed, Tank markers are also
+refreshed: the first Tank by group/raid order receives the star and the second
+Tank receives the circle. Clicking any **MT** button refreshes both markers too.
 
 ## Raid Workflow
 
@@ -99,9 +131,12 @@ Group optimization is intentionally step-by-step because WoW confirms subgroup m
 
 ### Manastorm and Rebuild
 
-**Start MS Lv 1** sends Ascension's entry request and stops recruitment. During the run, the addon warns about missing players, roles, or Auras and announces levels 59 and 60 with configurable messages.
+**Start MS Lv 1** sends Ascension's entry request and stops recruitment. During the run, the addon warns about missing players, roles, or Auras and announces levels 59 and 60 with configurable messages. Starting Manastorm disables the active Recruit listener but preserves the **Automatic recruitment posts** setting. Auto-Posts remain paused because the listener is off and resume only when the listener is enabled again after the run.
 
 Use **Rebuild raid** when players reach level 60:
+
+- After confirmation, removal, Manastorm exit, reinvites, and the final group optimization continue automatically.
+- If Ascension blocks a protected removal, exit, or invite call, the rebuild pauses and shows one local Continue action for that exact step.
 
 1. Confirm the rebuild and wait for the countdown.
 2. Remove the current raid members when prompted.

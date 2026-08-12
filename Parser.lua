@@ -129,11 +129,10 @@ function MSR:ParseApplication(message, allowAuraOnlyAnswer)
         aura = false
     end
 
-    return role, aura, roleMatches ~= 1 or aura == nil, roleMatches
+    return role, aura, roleMatches ~= 1, roleMatches
 end
 function MSR:GetApplicantMissingField(applicant)
     if not applicant or applicant.role == "UNKNOWN" then return "role" end
-    if applicant.aura == nil then return "aura" end
     if not tonumber(applicant.level) then return "level" end
     return nil
 end
@@ -145,7 +144,6 @@ function MSR:ReparseStoredApplicants()
         local assignmentLocked = type(applicant) == "table"
             and applicant.status == "Joined"
             and applicant.role ~= "UNKNOWN"
-            and applicant.aura ~= nil
         if type(applicant) == "table" and not assignmentLocked then
             local messages = {}
             if type(applicant.messageHistory) == "table" and #applicant.messageHistory > 0 then
@@ -160,12 +158,11 @@ function MSR:ReparseStoredApplicants()
 
             if #messages > 0 then
                 applicant.role = "UNKNOWN"
-                applicant.aura = nil
+                applicant.aura = false
                 for _, storedMessage in ipairs(messages) do
-                    local allowAuraOnlyAnswer = applicant.role ~= "UNKNOWN" and applicant.aura == nil
                     local parsedRole, parsedAura, _, roleMatches = self:ParseApplication(
                         storedMessage,
-                        allowAuraOnlyAnswer
+                        false
                     )
                     if roleMatches == 1 then
                         applicant.role = parsedRole
@@ -175,7 +172,7 @@ function MSR:ReparseStoredApplicants()
                     if parsedAura ~= nil then applicant.aura = parsedAura end
                     self:SetApplicantLevel(applicant, self:ParseApplicantLevel(storedMessage))
                 end
-                applicant.needsReview = applicant.role == "UNKNOWN" or applicant.aura == nil
+                applicant.needsReview = applicant.role == "UNKNOWN"
                 applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
             end
         end
@@ -192,7 +189,7 @@ function MSR:RecordWhisper(message, sender, role, aura, needsReview)
         sender = tostring(sender or ""),
         message = tostring(message or ""),
         role = role,
-        aura = aura,
+        aura = aura == true,
         needsReview = needsReview,
         receivedAt = time(),
     })
@@ -205,7 +202,7 @@ function MSR:RecordApplicantWhisper(applicant, message, role, aura, needsReview)
     table.insert(applicant.messageHistory, {
         message = tostring(message or ""),
         parsedRole = role,
-        parsedAura = aura,
+        parsedAura = aura == true,
         parsedNeedsReview = needsReview,
         receivedAt = time(),
     })
@@ -226,17 +223,15 @@ function MSR:HandleWhisper(message, sender)
 
     local applicant = self:EnsureApplicant(sender)
     self:SetApplicantLevel(applicant, self:ParseApplicantLevel(message))
-    local allowAuraOnlyAnswer = applicant.role ~= "UNKNOWN" and applicant.aura == nil
     local parsedRole, parsedAura, parsedNeedsReview, roleMatches = self:ParseApplication(
         message,
-        allowAuraOnlyAnswer
+        false
     )
     self:RecordWhisper(message, sender, parsedRole, parsedAura, parsedNeedsReview)
     self:RecordApplicantWhisper(applicant, message, parsedRole, parsedAura, parsedNeedsReview)
 
     local assignmentLocked = applicant.status == "Joined"
         and applicant.role ~= "UNKNOWN"
-        and applicant.aura ~= nil
     if not assignmentLocked then
         -- A whisper may contain only one half of the application. Preserve the
         -- previously parsed half and update only fields explicitly present in
@@ -247,7 +242,7 @@ function MSR:HandleWhisper(message, sender)
             applicant.role = "UNKNOWN"
         end
         if parsedAura ~= nil then applicant.aura = parsedAura end
-        applicant.needsReview = applicant.role == "UNKNOWN" or applicant.aura == nil
+        applicant.needsReview = applicant.role == "UNKNOWN"
         applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
     else
         applicant.needsReview = false
@@ -270,12 +265,6 @@ function MSR:HandleWhisper(message, sender)
         if applicant.pendingQuestion == "role" then
             reply = self:BuildConfiguredMessage("invalidApplicationReply", { player = applicant.name })
             replyKind = "question:role"
-        elseif applicant.pendingQuestion == "aura" then
-            reply = self:BuildConfiguredMessage("missingAuraReply", {
-                player = applicant.name,
-                role = self.ROLE_LABELS[applicant.role],
-            })
-            replyKind = "question:aura:" .. tostring(applicant.role)
         elseif applicant.pendingQuestion == "level" then
             reply = self:BuildConfiguredMessage("missingLevelReply", {
                 player = applicant.name,
@@ -314,7 +303,7 @@ function MSR:HandleWhisper(message, sender)
             "%s applied as %s, Aura: %s%s.",
             applicant.name,
             self.ROLE_LABELS[applicant.role],
-            applicant.aura == nil and "Unknown" or (applicant.aura and "Yes" or "No"),
+            applicant.aura and "Yes" or "No",
             applicant.needsReview and " |cffff6666(Needs Review)|r" or ""
         ))
     end
@@ -324,11 +313,12 @@ end
 function MSR:SetApplicantRole(applicant, role)
     if not applicant or not self.ROLE_LABELS[role] or role == "UNKNOWN" then return end
     applicant.role = role
-    applicant.needsReview = applicant.aura == nil
+    applicant.needsReview = false
     applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
     applicant.updatedAt = time()
     self.runtime.groupOptimization = nil
     self:BuildRoster()
+    self:QueueAutomaticGroupAssignment(applicant.key, "role changed")
     self:RefreshUI()
 end
 
@@ -346,6 +336,7 @@ function MSR:ToggleApplicantAura(applicant)
     applicant.updatedAt = time()
     self.runtime.groupOptimization = nil
     self:BuildRoster()
+    self:QueueAutomaticGroupAssignment(applicant.key, "Aura changed")
     self:RefreshUI()
 end
 

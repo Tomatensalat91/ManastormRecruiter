@@ -1,5 +1,28 @@
 local MSR = ManastormRecruiter
 
+local AUTO_GROUP_CONFIRM_DELAY = 0.75
+local AUTO_GROUP_MAX_ATTEMPTS = 3
+local AUTO_GROUP_INVITE_TTL = 180
+
+MSR.AUTOMATIC_GROUP_ASSIGNMENT_VERSION = 1
+
+function MSR:IsAutomaticGroupAssignmentEnabled()
+    return not self.db or not self.db.settings or self.db.settings.automaticGroupAssignment ~= false
+end
+
+function MSR:SetAutomaticGroupAssignmentEnabled(enabled)
+    if not self.db or not self.db.settings then return false end
+    self.db.settings.automaticGroupAssignment = enabled and true or false
+    if not enabled and self.runtime then
+        self.runtime.automaticGroupAssignment = nil
+        self.runtime.pendingInviteGroupAssignments = {}
+        self:Print("Automatic group assignment disabled; waiting moves were cleared.")
+    elseif enabled then
+        self:Print("Automatic group assignment enabled.")
+    end
+    return true
+end
+
 local function JoinWithOr(values)
     if #values == 0 then return "selected roles" end
     if #values == 1 then return values[1] end
@@ -100,8 +123,8 @@ function MSR:GetRoleForName(name)
     local playerKey = self:NormalizeName(UnitName("player") or "")
     if key == playerKey then return self.char.selfRole, self.char.selfAura end
     local applicant = self.char.session.applicants[key]
-    if applicant then return applicant.role or "UNKNOWN", applicant.aura end
-    return "UNKNOWN", nil
+    if applicant then return applicant.role or "UNKNOWN", applicant.aura == true end
+    return "UNKNOWN", false
 end
 
 function MSR:BuildRoster()
@@ -636,7 +659,7 @@ function MSR:GetGroupOptimizationSignature(roster)
         table.insert(values, table.concat({
             tostring(member.key or ""),
             tostring(member.role or "UNKNOWN"),
-            member.aura == nil and "?" or (member.aura and "1" or "0"),
+            member.aura and "1" or "0",
         }, ":"))
     end
     table.sort(values)
@@ -714,6 +737,51 @@ function MSR:MarkPrimaryTank(roster, primaryTankKey)
     self:Print(tostring(tank.name) .. " is first in Group 1 and marked with the raid star.")
     return true
 end
+
+function MSR:MarkTanks(roster)
+    if type(SetRaidTarget) ~= "function" then
+        self:PrivateWarning("SetRaidTarget is unavailable; Tank markers could not be updated.")
+        return false
+    end
+    local tanks = {}
+    for _, member in ipairs(roster or {}) do
+        if member.role == "TANK" then table.insert(tanks, member) end
+    end
+    table.sort(tanks, function(left, right)
+        local leftGroup = tonumber(left.subgroup) or 9
+        local rightGroup = tonumber(right.subgroup) or 9
+        if leftGroup ~= rightGroup then return leftGroup < rightGroup end
+        local leftIndex = tonumber(left.raidIndex) or 99
+        local rightIndex = tonumber(right.raidIndex) or 99
+        if leftIndex ~= rightIndex then return leftIndex < rightIndex end
+        return tostring(left.name or "") < tostring(right.name or "")
+    end)
+
+    local labels = { "star", "circle" }
+    for index = 1, math.min(2, #tanks) do
+        local tank = tanks[index]
+        local unit = tank.unit or (tank.raidIndex and ("raid" .. tostring(tank.raidIndex)))
+        if not unit then
+            self:PrivateWarning("Unable to resolve " .. tostring(tank.name) .. " for the Tank marker.")
+            return false
+        end
+        local ok, result = pcall(SetRaidTarget, unit, index)
+        if not ok or result == false then
+            self:PrivateWarning("Ascension rejected the " .. labels[index] .. " marker for " .. tostring(tank.name) .. ".")
+            return false
+        end
+    end
+    if #tanks > 0 then
+        local message = tostring(tanks[1].name) .. " marked with star"
+        if tanks[2] then message = message .. ", " .. tostring(tanks[2].name) .. " with circle" end
+        self:Print(message .. ".")
+    end
+    return true
+end
+
+-- SetPartyAssignment worked reliably when it was called directly from the
+-- player's final Verify groups click. Do not call this from roster events,
+-- OnUpdate, rebuild automation or automatic invite assignment.
 function MSR:AssignMainTanks(roster)
     if type(SetPartyAssignment) ~= "function" then
         self:PrivateWarning("SetPartyAssignment is unavailable in this client; Tanks could not be promoted with /mt.")
@@ -737,7 +805,7 @@ function MSR:AssignMainTanks(roster)
         end
     end
     if #failed > 0 then
-        self:PrivateWarning("Ascension rejected /mt for: " .. table.concat(failed, ", ") .. ". Click Optimize groups again to retry.")
+        self:PrivateWarning("Ascension rejected /mt for: " .. table.concat(failed, ", ") .. ". Click Verify groups again to retry.")
         return false
     end
     if assigned > 0 then
@@ -746,6 +814,347 @@ function MSR:AssignMainTanks(roster)
     return true
 end
 
+function MSR:AssignMainTank(member)
+    if not member or member.role ~= "TANK" then return false end
+    if InCombatLockdown and InCombatLockdown() then
+        self:PrivateWarning("Main Tank cannot be assigned during combat.")
+        return false
+    end
+    if not self:IsGroupLeader() then
+        self:PrivateWarning("Only the raid leader can assign a Main Tank.")
+        return false
+    end
+    if type(SetPartyAssignment) ~= "function" then
+        self:PrivateWarning("SetPartyAssignment is unavailable in this client.")
+        return false
+    end
+    local unit = member.unit or (member.raidIndex and ("raid" .. tostring(member.raidIndex)))
+    if not unit then
+        self:PrivateWarning("Unable to resolve the selected Tank's raid unit.")
+        return false
+    end
+    local ok, result = pcall(SetPartyAssignment, "MAINTANK", unit, member.name, true)
+    if not ok or result == false then
+        self:PrivateWarning("Ascension rejected /mt for " .. tostring(member.name) .. ".")
+        return false
+    end
+    self:MarkTanks(self:BuildRoster())
+    self:Print(tostring(member.name) .. " promoted with /mt.")
+    return true
+end
+
+function MSR:GetAutomaticGroupTarget(memberKey, roster)
+    roster = roster or self:BuildRoster()
+    local member
+    for _, candidate in ipairs(roster or {}) do
+        if candidate.key == memberKey then member = candidate break end
+    end
+    if not member then return nil, "The player is not in the raid roster." end
+
+    -- Aura coverage has priority over the compact partial-raid planner. If the
+    -- player's current group already has another Aura, use the first configured
+    -- group that is still uncovered. This is the behavior proven by the
+    -- separate AutoGroup test addon on Ascension.
+    if member.aura == true then
+        local requiredGroups = math.min(3, tonumber(self.db.settings.slots.aura) or 0)
+        local auraCounts = {}
+        local groupSizes = {}
+        for group = 1, requiredGroups do
+            auraCounts[group] = 0
+            groupSizes[group] = 0
+        end
+        for _, candidate in ipairs(roster) do
+            local group = tonumber(candidate.subgroup) or 1
+            if group >= 1 and group <= requiredGroups and candidate.key ~= memberKey then
+                groupSizes[group] = groupSizes[group] + 1
+                if candidate.aura == true then auraCounts[group] = auraCounts[group] + 1 end
+            end
+        end
+        for group = 1, requiredGroups do
+            -- A full uncovered group is still a valid target because the
+            -- execution path can use SwapRaidSubgroup instead of a direct move.
+            if auraCounts[group] == 0 then return group end
+        end
+    end
+
+    local plan, reason = self:BuildGroupOptimizationPlan(roster)
+    if not plan then return nil, reason end
+    return plan.desired and plan.desired[memberKey], nil, plan
+end
+
+function MSR:PlanAutomaticInviteGroupAssignment(applicant)
+    if not self:IsAutomaticGroupAssignmentEnabled() then return false end
+    if not applicant or not applicant.key then return false end
+    self.runtime.pendingInviteGroupAssignments = self.runtime.pendingInviteGroupAssignments or {}
+    self.runtime.pendingInviteGroupAssignments[applicant.key] = {
+        key = applicant.key,
+        name = applicant.name,
+        reason = "invite accepted",
+        armedAt = time(),
+    }
+    self:Print("Automatic group assignment armed for " .. tostring(applicant.name) .. "; waiting for the player to join.")
+    return true
+end
+
+function MSR:ActivatePendingInviteGroupAssignment(roster)
+    local planned = self.runtime and self.runtime.pendingInviteGroupAssignments
+    if type(planned) ~= "table" then return false end
+    roster = roster or self:BuildRoster()
+    local rosterByKey = {}
+    for _, member in ipairs(roster) do rosterByKey[member.key] = member end
+
+    for key, invitePlan in pairs(planned) do
+        local member = rosterByKey[key]
+        if member then
+            -- The first accepted invite joins a party. Keep the plan until the
+            -- subsequent party-to-raid conversion is visible to the client;
+            -- SetRaidSubgroup cannot run during the intermediate party state.
+            if GetNumRaidMembers and GetNumRaidMembers() > 0 then
+                local queued = self:QueueAutomaticGroupAssignment(key, invitePlan.reason or "invite accepted", true)
+                if queued then planned[key] = nil end
+                if self.runtime.automaticGroupAssignment then return true end
+            end
+        else
+            local applicant = self.char and self.char.session and self.char.session.applicants[key]
+            local expired = invitePlan.armedAt and time() - invitePlan.armedAt > AUTO_GROUP_INVITE_TTL
+            local cancelled = applicant and (
+                applicant.status == "Declined" or applicant.status == "Rejected" or applicant.status == "Left"
+            )
+            if not applicant or cancelled or expired then
+                planned[key] = nil
+            end
+        end
+    end
+    return false
+end
+
+function MSR:QueueAutomaticGroupAssignment(memberKey, reason, deferUpdate)
+    if not self:IsAutomaticGroupAssignmentEnabled() then return false end
+    if not memberKey then return false end
+
+    local roster = self:BuildRoster()
+    local member
+    for _, candidate in ipairs(roster) do
+        if candidate.key == memberKey then member = candidate break end
+    end
+    if not member then return false end
+
+    if not (GetNumRaidMembers and GetNumRaidMembers() > 0) then
+        self.runtime.pendingInviteGroupAssignments = self.runtime.pendingInviteGroupAssignments or {}
+        self.runtime.pendingInviteGroupAssignments[memberKey] = {
+            key = member.key,
+            name = member.name,
+            reason = reason or "assignment updated",
+            armedAt = time(),
+        }
+        self:Print("Automatic group assignment for " .. tostring(member.name) .. " is waiting for raid conversion.")
+        return true
+    end
+    if not member.raidIndex then return false end
+
+    local target, targetReason = self:GetAutomaticGroupTarget(memberKey, roster)
+    if not target then
+        self:PrivateWarning("Automatic group assignment skipped for " .. tostring(member.name) .. ": " .. tostring(targetReason))
+        return false
+    end
+    if tonumber(member.subgroup) == target then
+        self.runtime.automaticGroupAssignment = nil
+        self:Print(string.format("%s already matches Group %d after %s.", member.name, target, reason or "assignment update"))
+        self:MarkTanks(roster)
+        return true
+    end
+
+    self.runtime.automaticGroupAssignment = {
+        key = member.key,
+        name = member.name,
+        target = target,
+        reason = reason or "assignment updated",
+        attempts = 0,
+        nextAttemptAt = 0,
+    }
+    self:Print(string.format("Automatic group assignment planned: %s -> Group %d (%s).", member.name, target, reason or "assignment updated"))
+    if deferUpdate then return true end
+    return self:UpdateAutomaticGroupAssignment(roster)
+end
+
+function MSR:QueueSelfAutomaticGroupAssignment(reason)
+    local playerKey = self:NormalizeName(UnitName("player") or "")
+    if not playerKey or playerKey == "" then return false end
+    return self:QueueAutomaticGroupAssignment(playerKey, reason or "own assignment changed")
+end
+
+function MSR:PrintAutomaticGroupAssignmentStatus()
+    local enabled = self:IsAutomaticGroupAssignmentEnabled()
+    local raidCount = GetNumRaidMembers and GetNumRaidMembers() or 0
+    local manager = self:CanManageRaid()
+    self:Print(string.format(
+        "Group assignment: %s | raid %d | manager %s | SetRaidSubgroup %s.",
+        enabled and "ON" or "OFF",
+        raidCount,
+        manager and "yes" or "no",
+        type(SetRaidSubgroup) == "function" and "available" or "missing"
+    ))
+
+    local active = self.runtime and self.runtime.automaticGroupAssignment
+    if active then
+        self:Print(string.format(
+            "Active: %s -> Group %d | %s | attempts %d.",
+            tostring(active.name), tonumber(active.target) or 0,
+            tostring(active.reason), tonumber(active.attempts) or 0
+        ))
+    else
+        self:Print("Active: none.")
+    end
+
+    local waiting = 0
+    for _, plan in pairs(self.runtime and self.runtime.pendingInviteGroupAssignments or {}) do
+        waiting = waiting + 1
+        self:Print(string.format("Waiting: %s | %s | age %ds.",
+            tostring(plan.name), tostring(plan.reason), math.max(0, time() - (tonumber(plan.armedAt) or time()))
+        ))
+    end
+    if waiting == 0 then self:Print("Waiting: none.") end
+
+    local roster = self:BuildRoster()
+    for _, member in ipairs(roster) do
+        local target, reason = self:GetAutomaticGroupTarget(member.key, roster)
+        self:Print(string.format(
+            "%s: Group %d -> target %s | %s | Aura %s.",
+            tostring(member.name), tonumber(member.subgroup) or 1,
+            target and tostring(target) or "none",
+            tostring(member.role or "UNKNOWN"),
+            member.aura and "yes" or "no"
+        ))
+        if not target and reason then self:Print("  Target reason: " .. tostring(reason)) end
+    end
+end
+
+function MSR:FindAutomaticGroupSwapCandidate(member, target, roster)
+    local plan = self:BuildGroupOptimizationPlan(roster)
+    local desired = plan and plan.desired or {}
+    local source = tonumber(member.subgroup) or 1
+    local misplacedFallback
+    local sameRoleNonAura
+    local nonAuraFallback
+    for _, candidate in ipairs(roster) do
+        if candidate.key ~= member.key and tonumber(candidate.subgroup) == target then
+            -- Best case: the normal group plan explicitly wants this player in
+            -- the mover's current group, producing a clean two-way exchange.
+            if desired[candidate.key] == source then return candidate end
+            if desired[candidate.key] ~= nil and desired[candidate.key] ~= target then
+                misplacedFallback = misplacedFallback or candidate
+            end
+
+            -- Aura coverage can deliberately override the compact partial-raid
+            -- plan. In that case the target group may be full without any
+            -- plan-marked displacement. Swap out a non-Aura player, preferring
+            -- the same role so the group's role balance changes as little as possible.
+            if member.aura == true and candidate.aura ~= true then
+                if candidate.role == member.role then sameRoleNonAura = sameRoleNonAura or candidate end
+                nonAuraFallback = nonAuraFallback or candidate
+            end
+        end
+    end
+    return misplacedFallback or sameRoleNonAura or nonAuraFallback
+end
+
+function MSR:UpdateAutomaticGroupAssignment(roster)
+    if not self:IsAutomaticGroupAssignmentEnabled() then
+        if self.runtime then
+            self.runtime.automaticGroupAssignment = nil
+            self.runtime.pendingInviteGroupAssignments = {}
+        end
+        return false
+    end
+    local pending = self.runtime and self.runtime.automaticGroupAssignment
+    if not pending then
+        roster = roster or self:BuildRoster()
+        if not self:ActivatePendingInviteGroupAssignment(roster) then return false end
+        pending = self.runtime.automaticGroupAssignment
+        if not pending then return false end
+    end
+    if self.runtime.rebuild then return false end
+
+    roster = roster or self:BuildRoster()
+    local member
+    local targetCount = 0
+    for _, candidate in ipairs(roster) do
+        if candidate.key == pending.key then member = candidate end
+        if tonumber(candidate.subgroup) == pending.target then targetCount = targetCount + 1 end
+    end
+    if not member then
+        self.runtime.automaticGroupAssignment = nil
+        self:PrivateWarning("Automatic group assignment cancelled because " .. tostring(pending.name) .. " left the raid.")
+        return false
+    end
+    if tonumber(member.subgroup) == pending.target then
+        self.runtime.automaticGroupAssignment = nil
+        self:Print(string.format("Automatic group assignment confirmed: %s is now in Group %d.", member.name, pending.target))
+        self:MarkTanks(roster)
+        self:RefreshUI()
+        return true
+    end
+
+    local now = GetTime and GetTime() or 0
+    if now < (pending.nextAttemptAt or 0) then return false end
+    if InCombatLockdown and InCombatLockdown() then
+        pending.nextAttemptAt = now + 1
+        if pending.notice ~= "combat" then
+            pending.notice = "combat"
+            self:Print("Automatic group assignment for " .. member.name .. " will continue after combat.")
+        end
+        return false
+    end
+    if not self:CanManageRaid() then
+        pending.nextAttemptAt = now + 1
+        if pending.notice ~= "permission" then
+            pending.notice = "permission"
+            self:PrivateWarning("Automatic group assignment requires raid leader or assistant rights.")
+        end
+        return false
+    end
+    if pending.attempts >= AUTO_GROUP_MAX_ATTEMPTS then
+        self.runtime.automaticGroupAssignment = nil
+        self:PrivateWarning(string.format("Automatic group assignment for %s was not confirmed after %d attempts.", member.name, pending.attempts))
+        return false
+    end
+
+    pending.attempts = pending.attempts + 1
+    local from = tonumber(member.subgroup) or 1
+    local ok, result
+    local action = "move"
+    if targetCount < 5 then
+        if type(SetRaidSubgroup) ~= "function" then
+            self.runtime.automaticGroupAssignment = nil
+            self:PrivateWarning("SetRaidSubgroup is unavailable in this client.")
+            return false
+        end
+        ok, result = pcall(SetRaidSubgroup, member.raidIndex, pending.target)
+    else
+        local swap = self:FindAutomaticGroupSwapCandidate(member, pending.target, roster)
+        if not swap or type(SwapRaidSubgroup) ~= "function" then
+            pending.attempts = pending.attempts - 1
+            pending.nextAttemptAt = now + 1
+            if pending.notice ~= "full" then
+                pending.notice = "full"
+                self:PrivateWarning(string.format("Group %d is full and no safe planned swap is available for %s.", pending.target, member.name))
+            end
+            return false
+        end
+        action = "swap with " .. tostring(swap.name)
+        ok, result = pcall(SwapRaidSubgroup, member.raidIndex, swap.raidIndex)
+    end
+
+    if not ok or result == false then
+        self.runtime.automaticGroupAssignment = nil
+        self:PrivateWarning("Ascension rejected the automatic subgroup " .. action .. " for " .. tostring(member.name) .. ".")
+        return false
+    end
+    pending.notice = nil
+    pending.nextAttemptAt = now + AUTO_GROUP_CONFIRM_DELAY
+    self:Print(string.format("Automatic group %s sent: %s, Group %d -> Group %d (attempt %d).", action, member.name, from, pending.target, pending.attempts))
+    return true
+end
 function MSR:GetGroupOptimizationRemaining(roster, optimization)
     local remaining = 0
     if not optimization then return remaining end
@@ -850,16 +1259,20 @@ function MSR:GetGroupOptimizationStatus()
             optimization.pending.target
         )
     end
+    if optimization.awaitingProtectedFinalize then
+        return "Group positions are ready. Click Verify groups to mark and promote the Tanks."
+    end
     return "Group optimization is ready for the next verified step."
 end
 
 function MSR:GetGroupOptimizationButtonLabel()
     local optimization = self.runtime and self.runtime.groupOptimization
     if not optimization then return "Optimize groups" end
+    if optimization.awaitingProtectedFinalize then return "Verify groups" end
     return optimization.pending and "Verify / next" or "Next group step"
 end
 
-function MSR:OptimizeGroups()
+function MSR:OptimizeGroups(allowProtectedFinalize)
     if InCombatLockdown and InCombatLockdown() then self:PrivateWarning("Groups cannot be optimized during combat.") return false end
     if self.runtime.rebuild then self:PrivateWarning("Finish or cancel the raid rebuild before optimizing groups.") return false end
     if not (GetNumRaidMembers and GetNumRaidMembers() > 0) then self:PrivateWarning("Convert the party to a raid first.") return false end
@@ -915,11 +1328,18 @@ function MSR:OptimizeGroups()
 
     local remaining = self:GetGroupOptimizationRemaining(roster, optimization)
     if remaining == 0 then
-        if not self:AssignMainTanks(roster) then
+        if not allowProtectedFinalize then
+            optimization.awaitingProtectedFinalize = true
+            self:Print("Raid groups are positioned. Click Verify groups once to mark and promote the Tanks with /mt.")
+            self:RefreshUI()
+            return true
+        end
+        if not self:MarkTanks(roster) then
             self:RefreshUI()
             return false
         end
-        if not self:MarkPrimaryTank(roster, optimization.primaryTankKey) then
+        if not self:AssignMainTanks(roster) then
+            optimization.awaitingProtectedFinalize = true
             self:RefreshUI()
             return false
         end

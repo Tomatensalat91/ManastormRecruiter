@@ -237,14 +237,6 @@ function MSR:CanStartManastormLevelOne()
     return true
 end
 
-function MSR:DisableAutoPostForManastorm()
-    if not self.db or not self.db.settings then return end
-    local wasEnabled = self.db.settings.autoPost == true
-    self.db.settings.autoPost = false
-    self.runtime.lastAutoPostAttempt = nil
-    if wasEnabled then self:Print("Auto post disabled for the Manastorm run.") end
-end
-
 function MSR:ClearWaitingApplicantsForManastorm()
     local session = self.char and self.char.session
     if not session or type(session.applicants) ~= "table" then return 0 end
@@ -278,7 +270,7 @@ function MSR:StopRecruitmentForManastorm()
     local wasListening = session.listening == true
     session.listening = false
     local removed = self:ClearWaitingApplicantsForManastorm()
-    self:DisableAutoPostForManastorm()
+    self.runtime.lastAutoPostAttempt = nil
     if wasListening or removed > 0 then
         self:Print(string.format(
             "Listening disabled and waiting list cleared (%d player%s removed).",

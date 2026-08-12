@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: Manastorm Auto Group Test
+## Notes: Tests automatic subgroup assignment after an invite is accepted.
+## Author: Manastorm Recruiter
+## Version: 0.1.1
+## RequiredDeps: ManastormRecruiter
+## SavedVariables: ManastormAutoGroupTestDB
+
+ManastormAutoGroupTest.lua

@@ -47,7 +47,6 @@ local MESSAGE_FIELDS = {
     { key = "recruitment", label = "Recruitment message" },
     { key = "reservationSuffix", label = "Aura reservation suffix" },
     { key = "invalidApplicationReply", label = "Incomplete application reply" },
-    { key = "missingAuraReply", label = "Missing Aura question" },
     { key = "missingLevelReply", label = "Missing level question" },
     { key = "acceptedApplicationReply", label = "Accepted application reply" },
     { key = "inviteReminder", label = "Pending invite reminder" },
@@ -72,7 +71,7 @@ local MESSAGE_SECTIONS = {
         x = 18,
         y = -90,
         keys = {
-            "recruitment", "reservationSuffix", "invalidApplicationReply", "missingAuraReply", "missingLevelReply", "acceptedApplicationReply",
+            "recruitment", "reservationSuffix", "invalidApplicationReply", "missingLevelReply", "acceptedApplicationReply",
             "inManastormReply", "raidFullReply", "roleFullReply", "auraRequiredReply",
         },
     },
@@ -220,7 +219,7 @@ end
 
 local function SetAuraButtonIcon(button, aura)
     if not button or not button.icon then return end
-    button.auraState = aura == nil and "unknown" or (aura and "yes" or "no")
+    button.auraState = aura == true and "yes" or "no"
     button:SetText("")
     button.icon:SetTexture(AURA_ICON)
     button.icon:SetVertexColor(1, 1, 1, 1)
@@ -865,6 +864,7 @@ function UI:CreateSettingsPanel()
         MSR.char.selfRole = MSR.char.selfRole == "TANK" and "HEAL" or MSR.char.selfRole == "HEAL" and "DPS" or "TANK"
         MSR.runtime.groupOptimization = nil
         MSR:BuildRoster()
+        MSR:QueueSelfAutomaticGroupAssignment("own role changed")
         UI:Refresh()
     end)
     self.selfRoleButton = selfRole
@@ -877,6 +877,7 @@ function UI:CreateSettingsPanel()
         MSR.char.selfAura = button:GetChecked() == 1
         MSR.runtime.groupOptimization = nil
         MSR:BuildRoster()
+        MSR:QueueSelfAutomaticGroupAssignment("own Aura changed")
         UI:Refresh()
     end)
     self.selfAuraCheck = selfAura
@@ -908,7 +909,6 @@ function UI:CreateSettingsPanel()
     autoPostText:SetPoint("LEFT", autoPost, "RIGHT", -1, 0)
     autoPost:SetScript("OnClick", function(button)
         MSR.db.settings.autoPost = button:GetChecked() == 1
-        if MSR.db.settings.autoPost then MSR.char.session.listening = true end
         UI:Refresh()
     end)
     self.autoPostCheck = autoPost
@@ -931,6 +931,16 @@ function UI:CreateSettingsPanel()
         UI:Refresh()
     end)
     self.auraReservationCheck = auraReservation
+
+    local automaticGroups = CreateFrame("CheckButton", nil, automationCard, "UICheckButtonTemplate")
+    automaticGroups:SetPoint("TOPLEFT", automationCard, "TOPLEFT", 14, -143)
+    local automaticGroupsText = CreateLabel(automationCard, "Move players automatically after Invite or Role/Aura changes", false, COLORS.text)
+    automaticGroupsText:SetPoint("LEFT", automaticGroups, "RIGHT", -1, 0)
+    automaticGroups:SetScript("OnClick", function(button)
+        MSR:SetAutomaticGroupAssignmentEnabled(button:GetChecked() == 1)
+        UI:Refresh()
+    end)
+    self.automaticGroupsCheck = automaticGroups
 
     local roleLabel = CreateLabel(automationCard, "FOR ROLES", false, COLORS.muted)
     roleLabel:SetPoint("TOPLEFT", automationCard, "TOPLEFT", 278, -111)
@@ -989,8 +999,7 @@ function UI:CreateRecruitmentPanel()
     local listen = CreateButton(self.frame, "Listening: OFF", 116, 25)
     listen:SetPoint("LEFT", post, "RIGHT", 8, 0)
     listen:SetScript("OnClick", function()
-        MSR.char.session.listening = not MSR.char.session.listening
-        UI:Refresh()
+        MSR:ToggleRecruitment()
     end)
     self.listenButton = listen
 
@@ -1077,8 +1086,7 @@ function UI:CreateApplicantRow(parent, index)
         ApplyButtonHover(button)
         GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
         local applicant = button.applicant
-        local auraLabel = "Unknown"
-        if applicant and applicant.aura ~= nil then auraLabel = applicant.aura and "Available" or "Not available" end
+        local auraLabel = applicant and applicant.aura == true and "Available" or "Not available"
         GameTooltip:SetText("Manastorm Aura: " .. auraLabel, COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
         GameTooltip:AddLine("Click to toggle this player's Aura assignment.", 1, 1, 1, true)
         GameTooltip:Show()
@@ -1390,6 +1398,7 @@ function UI:CycleRosterMemberRole(member)
             or MSR.char.selfRole == "HEAL" and "DPS" or "TANK"
         MSR.runtime.groupOptimization = nil
         MSR:BuildRoster()
+        MSR:QueueSelfAutomaticGroupAssignment("own role changed")
         MSR:RefreshUI()
         return
     end
@@ -1404,6 +1413,7 @@ function UI:ToggleRosterMemberAura(member)
         MSR.char.selfAura = not (MSR.char.selfAura == true)
         MSR.runtime.groupOptimization = nil
         MSR:BuildRoster()
+        MSR:QueueSelfAutomaticGroupAssignment("own Aura changed")
         MSR:RefreshUI()
         return
     end
@@ -1466,8 +1476,7 @@ function UI:CreateGroupCard(parent, group)
             ApplyButtonHover(button)
             GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
             local member = button.member
-            local auraLabel = "Unknown"
-            if member and member.aura ~= nil then auraLabel = member.aura and "Available" or "Not available" end
+            local auraLabel = member and member.aura == true and "Available" or "Not available"
             GameTooltip:SetText("Manastorm Aura: " .. auraLabel, COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
             GameTooltip:AddLine("Click to mark whether this player has a Manastorm Aura.", 1, 1, 1, true)
             GameTooltip:Show()
@@ -1480,6 +1489,22 @@ function UI:CreateGroupCard(parent, group)
         ready:SetWidth(20)
         ready:SetJustifyH("CENTER")
         row.readyText = ready
+
+        local mainTank = CreateButton(row, "MT", 27, 21)
+        mainTank:SetPoint("RIGHT", row, "RIGHT", -22, 0)
+        mainTank:SetScript("OnClick", function(button) MSR:AssignMainTank(button.member) end)
+        mainTank:SetScript("OnEnter", function(button)
+            ApplyButtonHover(button)
+            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+            if button.member then
+                GameTooltip:SetText("Set Main Tank: " .. tostring(button.member.name), COLORS.cyan[1], COLORS.cyan[2], COLORS.cyan[3])
+                GameTooltip:AddLine("Direct click assignment. No chat confirmation is required.", 1, 1, 1, true)
+            end
+            GameTooltip:Show()
+        end)
+        mainTank:SetScript("OnLeave", function(button) RestoreButtonBackdrop(button) GameTooltip:Hide() end)
+        mainTank:Hide()
+        row.mainTankButton = mainTank
 
         local kick = CreateButton(row, "X", 18, 21)
         kick:SetPoint("RIGHT", row, "RIGHT", -1, 0)
@@ -1613,7 +1638,7 @@ function UI:CreateRebuildPanel()
     self.rebuildPhaseStatus = status
 
     local help = CreateLabel(panel,
-        "This guided flow keeps the saved roster through /reload and exposes only the action required for the current step.",
+        "The saved roster is rebuilt automatically. A local Continue button appears only if Ascension blocks a protected action.",
         false, COLORS.muted)
     help:SetPoint("TOPLEFT", panel, "TOPLEFT", 18, -84)
     help:SetWidth(760)
@@ -1731,7 +1756,7 @@ end
 
 function UI:CreateActionBar()
     local optimize = CreateButton(self.frame, "Optimize groups", 126, 27)
-    optimize:SetScript("OnClick", function() MSR:OptimizeGroups() end)
+    optimize:SetScript("OnClick", function() MSR:OptimizeGroups(true) end)
     optimize.actionWidth = 126
     self.optimizeButton = optimize
 
@@ -1762,12 +1787,19 @@ function UI:CreateActionBar()
     manualAction:Hide()
     self.manualRebuildButton = manualAction
 
-    local recruitToggle = CreateButton(self.frame, "Auto recruit: OFF", 150, 27)
+    local recruitToggle = CreateButton(self.frame, "Recruit listener: OFF", 150, 27)
     recruitToggle:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 16, 16)
     recruitToggle:SetScript("OnClick", function() MSR:ToggleRecruitment() end)
     recruitToggle.actionWidth = 150
     recruitToggle:Show()
     self.recruitToggleActionButton = recruitToggle
+
+    local manualRecruitment = CreateButton(self.frame, "Post recruiting msg", 150, 27)
+    manualRecruitment:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 174, 16)
+    manualRecruitment:SetScript("OnClick", function() MSR:PostRecruitment(false) end)
+    manualRecruitment.actionWidth = 150
+    manualRecruitment:Hide()
+    self.manualRecruitmentActionButton = manualRecruitment
 
     local postRoster = CreateButton(self.frame, "Post roster", 112, 27)
     postRoster:SetScript("OnClick", function() MSR:PostRaidRosterSummary() end)
@@ -1801,7 +1833,7 @@ function UI:RefreshRecruitmentToggle()
     if not button then return end
     local running = MSR:IsRecruitmentRunning()
     local red, green, blue = running and 0.18 or 0.78, running and 0.72 or 0.12, running and 0.24 or 0.12
-    button:SetText(running and "Auto recruit: ON" or "Auto recruit: OFF")
+    button:SetText(running and "Recruit listener: ON" or "Recruit listener: OFF")
     local normal = button.GetNormalTexture and button:GetNormalTexture()
     local pushed = button.GetPushedTexture and button:GetPushedTexture()
     local highlight = button.GetHighlightTexture and button:GetHighlightTexture()
@@ -1826,7 +1858,7 @@ end
 
 function UI:ShowActionButtons(buttons)
     for _, button in ipairs(self.contextActionButtons or {}) do button:Hide() end
-    local x = 174
+    local x = self.manualRecruitmentActionButton and self.manualRecruitmentActionButton:IsShown() and 332 or 174
     for _, button in ipairs(buttons or {}) do
         button:ClearAllPoints()
         button:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", x, 16)
@@ -1843,6 +1875,24 @@ function UI:RefreshActionBar(phase, inManastorm, inGroup, rebuildStatus, optimiz
         or "Ready Check")
     self:RefreshRecruitmentToggle()
     self.recruitToggleActionButton:Show()
+    if self.manualRecruitmentActionButton then
+        if MSR.db.settings.autoPost == true then
+            self.manualRecruitmentActionButton:Hide()
+        else
+            self.manualRecruitmentActionButton:Show()
+            if inManastorm then self.manualRecruitmentActionButton:Disable()
+            else self.manualRecruitmentActionButton:Enable() end
+        end
+    end
+    if self.warningText then
+        self.warningText:ClearAllPoints()
+        self.warningText:SetPoint(
+            "BOTTOMLEFT", self.frame, "BOTTOMLEFT",
+            self.manualRecruitmentActionButton:IsShown() and 730 or 570,
+            23
+        )
+        self.warningText:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -16, 23)
+    end
     local leavePending = MSR.runtime and MSR.runtime.pendingLeave
     local soloInManastorm = inManastorm and not inGroup
     self.leaveActionButton:SetText(leavePending and "Leaving..." or soloInManastorm and "Leave MS" or "Post & Leave")
@@ -1945,6 +1995,7 @@ function UI:RefreshSettings()
     self.selfAuraCheck:SetChecked(MSR.char.selfAura == true)
     self.autoPostCheck:SetChecked(MSR.db.settings.autoPost == true)
     self.autoReplyCheck:SetChecked(MSR.db.settings.autoReply == true)
+    self.automaticGroupsCheck:SetChecked(MSR:IsAutomaticGroupAssignmentEnabled())
     self.auraReservationCheck:SetChecked(MSR.db.settings.auraReservation.enabled == true)
     for key, button in pairs(self.auraReservationRoleButtons) do
         button:SetText(MSR.db.settings.auraReservation.roles[key] and ("[" .. button.roleLabel .. "]") or button.roleLabel)
@@ -2011,7 +2062,6 @@ function UI:RefreshApplicants()
             else
                 SetBackdrop(row, row.normalBackground, row.normalBorder)
             local statusLabel = applicant.pendingQuestion == "role" and "Role?"
-                or applicant.pendingQuestion == "aura" and "Aura?"
                 or applicant.pendingQuestion == "level" and "Level?"
                 or applicant.needsReview and "Review" or applicant.status
             local inviteSeconds = MSR:GetInviteSecondsRemaining(applicant)
@@ -2088,6 +2138,13 @@ function UI:RefreshGroups()
                     or readyStatus == "notready" and "|cffff5555N|r"
                     or readyStatus == "waiting" and "|cffffcc55?|r"
                     or "")
+                row.mainTankButton.member = member
+                if member.role == "TANK" and MSR:IsGroupLeader() then
+                    row.mainTankButton:Show()
+                    row.mainTankButton:Enable()
+                else
+                    row.mainTankButton:Hide()
+                end
                 row.kickButton.member = member
                 row.kickButton:Show()
                 local canKick = MSR:CanKickRosterMember(member)
@@ -2102,6 +2159,8 @@ function UI:RefreshGroups()
                 row.auraButton.member = nil
                 row.auraButton:Hide()
                 row.readyText:SetText("")
+                row.mainTankButton.member = nil
+                row.mainTankButton:Hide()
                 row.kickButton.member = nil
                 row.kickButton:Hide()
             end
@@ -2125,6 +2184,7 @@ function UI:Refresh()
     self.selfAuraCheck:SetChecked(MSR.char.selfAura == true)
     self.autoPostCheck:SetChecked(MSR.db.settings.autoPost == true)
     self.autoReplyCheck:SetChecked(MSR.db.settings.autoReply == true)
+    self.automaticGroupsCheck:SetChecked(MSR:IsAutomaticGroupAssignmentEnabled())
     self.auraReservationCheck:SetChecked(MSR.db.settings.auraReservation.enabled == true)
     for key, button in pairs(self.auraReservationRoleButtons) do
         button:SetText(MSR.db.settings.auraReservation.roles[key] and ("[" .. button.roleLabel .. "]") or button.roleLabel)
@@ -2230,7 +2290,7 @@ StaticPopupDialogs["MSR_RESET_SESSION"] = {
 }
 
 StaticPopupDialogs["MSR_REBUILD_RAID"] = {
-    text = "Rebuild the raid? A raid warning is sent immediately. Five seconds later every member except you is removed, then reinvited after three seconds.",
+    text = "Rebuild the raid automatically? A raid warning is sent immediately. Five seconds later every member except you is removed, Manastorm is left, and eligible players are reinvited.",
     button1 = "Start rebuild",
     button2 = "Cancel",
     OnAccept = function() MSR:BeginRebuild() end,

@@ -37,6 +37,7 @@ dofile("Manastorm.lua")
 dofile("Rebuild.lua")
 
 local MSR = ManastormRecruiter
+assertEqual(MSR.VERSION, "0.6.20", "runtime version matches addon release")
 MSR.db = {
     settings = {
         channel = "8",
@@ -94,15 +95,25 @@ SendChatMessage = function(_, channel)
     return true
 end
 MSR.char.session.listening = false
+MSR.db.settings.autoPost = false
 assertEqual(MSR:ToggleRecruitment(), true, "recruitment toggle starts")
 assertEqual(MSR.char.session.listening, true, "start enables applicant listening")
-assertEqual(MSR.db.settings.autoPost, true, "start enables automatic recruitment posts")
+assertEqual(MSR.db.settings.autoPost, false, "listener start preserves disabled Auto-Post setting")
 assertEqual(recruitmentPosts, 0, "start does not send a recruitment post")
-assertEqual(MSR.char.session.lastPostAt, epochNow, "start begins a fresh automatic-post interval")
 assertEqual(MSR:ToggleRecruitment(), true, "recruitment toggle stops")
-assertEqual(MSR.char.session.listening, false, "stop pauses applicant listening and auto posts")
-assertEqual(MSR.db.settings.autoPost, false, "stop disables automatic recruitment posts")
+assertEqual(MSR.char.session.listening, false, "stop pauses applicant listening and scanner")
+assertEqual(MSR.db.settings.autoPost, false, "listener stop preserves disabled Auto-Post setting")
 assertEqual(recruitmentPosts, 0, "stop does not send a recruitment post")
+assertEqual(MSR:PostRecruitment(false), true, "manual recruitment message can be posted while listener is off")
+assertEqual(recruitmentPosts, 1, "manual recruitment button sends exactly one message")
+assertEqual(MSR.char.session.listening, false, "manual recruitment post does not enable listener")
+MSR.db.settings.autoPost = true
+assertEqual(MSR:ToggleRecruitment(), true, "listener starts with Auto-Post setting enabled")
+assertEqual(MSR.db.settings.autoPost, true, "listener start preserves enabled Auto-Post setting")
+assertEqual(MSR.char.session.lastPostAt, epochNow, "enabled Auto-Post begins a fresh interval")
+assertEqual(MSR:ToggleRecruitment(), true, "listener stops with Auto-Post setting enabled")
+assertEqual(MSR.db.settings.autoPost, true, "listener stop preserves enabled Auto-Post setting")
+MSR.db.settings.autoPost = false
 GetChannelName = originalGetChannelName
 SendChatMessage = originalSendChatMessage
 
@@ -142,9 +153,165 @@ local partialGroups = MSR:BuildPartialDesiredGroups(partialRoster)
 assertEqual(partialGroups[1][1].key, "tank", "primary Tank is first in desired Group 1")
 local partialPlan = MSR:BuildGroupOptimizationPlan(partialRoster)
 assertEqual(partialPlan.primaryTankKey, "tank", "group optimization stores primary Tank")
-local markedUnit, markedIcon
+
+local twoAuraRoster = {
+    { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
+    { key = "kard", name = "Kard", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS", aura = true },
+}
+local auraTarget = MSR:GetAutomaticGroupTarget("kard", twoAuraRoster)
+assertEqual(auraTarget, 2, "second Aura is assigned to uncovered Group 2 in a partial raid")
+local selfAuraTarget = MSR:GetAutomaticGroupTarget("leader", twoAuraRoster)
+assertEqual(selfAuraTarget, 2, "own Aura change can move the raid leader to uncovered Group 2")
+
+local originalBuildRoster = MSR.BuildRoster
+local originalGetNumRaidMembers = GetNumRaidMembers
+local originalIsRaidLeader = IsRaidLeader
+local originalSetRaidSubgroup = SetRaidSubgroup
+local automaticMoveCalls = 0
+MSR.BuildRoster = function() return twoAuraRoster end
+GetNumRaidMembers = function() return #twoAuraRoster end
+IsRaidLeader = function() return true end
+SetRaidSubgroup = function(index, target)
+    automaticMoveCalls = automaticMoveCalls + 1
+    twoAuraRoster[index].subgroup = target
+    return true
+end
+MSR.runtime.automaticGroupAssignment = nil
+assertEqual(MSR:QueueAutomaticGroupAssignment("kard", "Aura changed"), true, "Aura update queues automatic group assignment")
+assertEqual(automaticMoveCalls, 1, "Aura update sends subgroup API without another button")
+assertEqual(MSR.runtime.automaticGroupAssignment.target, 2, "automatic move stores Group 2 target until confirmation")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(twoAuraRoster), true, "updated roster confirms automatic assignment")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil, "confirmed automatic assignment is cleared")
+MSR.BuildRoster = originalBuildRoster
+GetNumRaidMembers = originalGetNumRaidMembers
+IsRaidLeader = originalIsRaidLeader
+SetRaidSubgroup = originalSetRaidSubgroup
+
+local fullTargetRoster = {
+    { key = "mover", name = "AuraMover", unit = "raid1", raidIndex = 1, subgroup = 1, role = "HEAL", aura = true },
+    { key = "aura1", name = "AuraOne", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS", aura = true },
+    { key = "target1", name = "TargetOne", unit = "raid3", raidIndex = 3, subgroup = 2, role = "HEAL", aura = false },
+    { key = "target2", name = "TargetTwo", unit = "raid4", raidIndex = 4, subgroup = 2, role = "DPS", aura = false },
+    { key = "target3", name = "TargetThree", unit = "raid5", raidIndex = 5, subgroup = 2, role = "DPS", aura = false },
+    { key = "target4", name = "TargetFour", unit = "raid6", raidIndex = 6, subgroup = 2, role = "DPS", aura = false },
+    { key = "target5", name = "TargetFive", unit = "raid7", raidIndex = 7, subgroup = 2, role = "DPS", aura = false },
+}
+local originalSwapRaidSubgroup = SwapRaidSubgroup
+local swapCalls = 0
+MSR.BuildRoster = function() return fullTargetRoster end
+GetNumRaidMembers = function() return #fullTargetRoster end
+IsRaidLeader = function() return true end
+SwapRaidSubgroup = function(first, second)
+    swapCalls = swapCalls + 1
+    local group = fullTargetRoster[first].subgroup
+    fullTargetRoster[first].subgroup = fullTargetRoster[second].subgroup
+    fullTargetRoster[second].subgroup = group
+    return true
+end
+MSR.runtime.automaticGroupAssignment = nil
+assertEqual(MSR:GetAutomaticGroupTarget("mover", fullTargetRoster), 2,
+    "Aura mover targets uncovered full Group 2")
+assertEqual(MSR:QueueAutomaticGroupAssignment("mover", "Aura changed"), true,
+    "full target group uses automatic swap path")
+assertEqual(swapCalls, 1, "SwapRaidSubgroup is called once for a full target group")
+local swappedOut = 0
+for index = 3, 7 do
+    if fullTargetRoster[index].subgroup == 1 then swappedOut = swappedOut + 1 end
+end
+assertEqual(swappedOut, 1, "one full-target member is exchanged into the source group")
+assertEqual(fullTargetRoster[1].subgroup, 2, "Aura mover enters the previously full target group")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fullTargetRoster), true,
+    "full-group swap is confirmed from roster")
+MSR.BuildRoster = originalBuildRoster
+GetNumRaidMembers = originalGetNumRaidMembers
+IsRaidLeader = originalIsRaidLeader
+SwapRaidSubgroup = originalSwapRaidSubgroup
+
+local inviteRoster = {
+    { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
+}
+local inviteRaidConverted = false
+local invitee = { key = "invitee", name = "Invitee", role = "HEAL", aura = true, status = "Invited" }
+MSR.char.session.applicants.invitee = invitee
+MSR.BuildRoster = function() return inviteRoster end
+GetNumRaidMembers = function() return inviteRaidConverted and #inviteRoster or 0 end
+IsRaidLeader = function() return true end
+automaticMoveCalls = 0
+SetRaidSubgroup = function(index, target)
+    automaticMoveCalls = automaticMoveCalls + 1
+    inviteRoster[index].subgroup = target
+    return true
+end
+MSR.runtime.automaticGroupAssignment = nil
+MSR.runtime.pendingInviteGroupAssignments = {}
+assertEqual(MSR:PlanAutomaticInviteGroupAssignment(invitee), true, "successful invite arms automatic assignment")
+assertEqual(MSR.runtime.pendingInviteGroupAssignments.invitee ~= nil, true, "invite waits in assignment queue")
+assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), false, "pending invite does not move before joining")
+assertEqual(automaticMoveCalls, 0, "no subgroup API call is sent before invite acceptance")
+table.insert(inviteRoster, {
+    key = "invitee", name = "Invitee", unit = "raid2", raidIndex = 2,
+    subgroup = 1, role = "HEAL", aura = true,
+})
+invitee.status = "Joined"
+assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), false, "accepted invite waits during intermediate party state")
+assertEqual(MSR.runtime.pendingInviteGroupAssignments.invitee ~= nil, true, "party state retains invite assignment plan")
+assertEqual(automaticMoveCalls, 0, "party state cannot consume subgroup API call")
+inviteRoster = { inviteRoster[1] }
+invitee.status = "NoResponse"
+assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), false, "NoResponse timeout does not discard assignment plan")
+assertEqual(MSR.runtime.pendingInviteGroupAssignments.invitee ~= nil, true, "late invite acceptance remains armed")
+table.insert(inviteRoster, {
+    key = "invitee", name = "Invitee", unit = "raid2", raidIndex = 2,
+    subgroup = 1, role = "HEAL", aura = true,
+})
+invitee.status = "Joined"
+inviteRaidConverted = true
+assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), true, "joined invite activates automatic assignment")
+assertEqual(automaticMoveCalls, 1, "invite acceptance sends subgroup API without another button")
+assertEqual(MSR.runtime.automaticGroupAssignment.target, 2, "joined second Aura targets Group 2")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), true, "invite move is confirmed from updated roster")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil, "confirmed invite assignment is cleared")
+MSR.BuildRoster = originalBuildRoster
+GetNumRaidMembers = originalGetNumRaidMembers
+IsRaidLeader = originalIsRaidLeader
+SetRaidSubgroup = originalSetRaidSubgroup
+MSR.char.session.applicants.invitee = nil
+
+local queuedAssignment
+local originalQueueAutomaticGroupAssignment = MSR.QueueAutomaticGroupAssignment
+MSR.QueueAutomaticGroupAssignment = function(_, key, reason)
+    queuedAssignment = { key = key, reason = reason }
+    return true
+end
+local editedApplicant = { key = "manual", name = "Manual", role = "DPS", aura = false }
+MSR:SetApplicantRole(editedApplicant, "HEAL")
+assertEqual(queuedAssignment.key, "manual", "role edit queues joined-player group assignment")
+assertEqual(queuedAssignment.reason, "role changed", "role edit records assignment reason")
+MSR:ToggleApplicantAura(editedApplicant)
+assertEqual(queuedAssignment.reason, "Aura changed", "Aura edit queues joined-player group assignment")
+MSR:QueueSelfAutomaticGroupAssignment("own Aura changed")
+assertEqual(queuedAssignment.key, "leader", "own assignment queues the player raid member")
+assertEqual(queuedAssignment.reason, "own Aura changed", "own assignment keeps its update reason")
+MSR.QueueAutomaticGroupAssignment = originalQueueAutomaticGroupAssignment
+
+MSR.runtime.automaticGroupAssignment = { key = "old" }
+MSR.runtime.pendingInviteGroupAssignments = { old = { key = "old" } }
+assertEqual(MSR:SetAutomaticGroupAssignmentEnabled(false), true, "automatic assignment setting can be disabled")
+assertEqual(MSR:IsAutomaticGroupAssignmentEnabled(), false, "automatic assignment reports disabled")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil, "disabling clears an active automatic move")
+assertEqual(next(MSR.runtime.pendingInviteGroupAssignments), nil, "disabling clears waiting invite moves")
+assertEqual(MSR:PlanAutomaticInviteGroupAssignment(editedApplicant), false, "disabled setting blocks invite planning")
+assertEqual(MSR:SetAutomaticGroupAssignmentEnabled(true), true, "automatic assignment setting can be enabled")
+assertEqual(MSR:IsAutomaticGroupAssignmentEnabled(), true, "automatic assignment reports enabled")
+
+local markedUnit, markedIcon, tankMarkerCalls
 SetRaidTarget = function(unit, icon)
     markedUnit, markedIcon = unit, icon
+    tankMarkerCalls = tankMarkerCalls or {}
+    table.insert(tankMarkerCalls, { unit = unit, icon = icon })
     return true
 end
 partialRoster[2].subgroup = 1
@@ -167,12 +334,40 @@ local tankRoster = {
     { key = "tank2", name = "OffTank", unit = "raid6", raidIndex = 6, subgroup = 2, role = "TANK" },
     { key = "damage", name = "Damage", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS" },
 }
-assertEqual(MSR:AssignMainTanks(tankRoster), true, "all configured Tanks receive main-Tank assignment")
+tankMarkerCalls = {}
+assertEqual(MSR:MarkTanks(tankRoster), true, "Tank markers are assigned from final group order")
+assertEqual(#tankMarkerCalls, 2, "first two Tanks receive raid markers")
+assertEqual(tankMarkerCalls[1].unit, "raid1", "first Tank is selected by group and raid order")
+assertEqual(tankMarkerCalls[1].icon, 1, "first Tank receives the star")
+assertEqual(tankMarkerCalls[2].unit, "raid6", "second Tank follows the first Tank")
+assertEqual(tankMarkerCalls[2].icon, 2, "second Tank receives the circle")
+assertEqual(MSR:AssignMainTanks(tankRoster), true, "verified group click promotes all configured Tanks")
 assertEqual(#mainTankAssignments, 2, "only Tank roles receive /mt")
 assertEqual(mainTankAssignments[1].assignment, "MAINTANK", "first Tank uses MAINTANK assignment")
 assertEqual(mainTankAssignments[1].unit, "raid1", "first Tank unit is forwarded")
 assertEqual(mainTankAssignments[2].unit, "raid6", "second Tank unit is forwarded")
 assertEqual(mainTankAssignments[2].exactMatch, true, "main-Tank assignment uses exact player matching")
+mainTankAssignments = {}
+local buildRosterForMarkers = MSR.BuildRoster
+MSR.BuildRoster = function() return tankRoster end
+tankMarkerCalls = {}
+assertEqual(MSR:AssignMainTank(tankRoster[1]), true, "MT button assigns its selected Tank directly")
+assertEqual(#mainTankAssignments, 1, "MT button performs one direct assignment")
+assertEqual(mainTankAssignments[1].name, "MainTank", "MT button forwards the selected Tank name")
+assertEqual(#tankMarkerCalls, 2, "MT button refreshes both Tank markers")
+assertEqual(tankMarkerCalls[1].icon, 1, "MT button keeps the first Tank on star")
+assertEqual(tankMarkerCalls[2].icon, 2, "MT button keeps the second Tank on circle")
+MSR.BuildRoster = buildRosterForMarkers
+
+tankMarkerCalls = {}
+MSR.runtime.automaticGroupAssignment = {
+    key = "tank2", name = "OffTank", target = 2, reason = "role changed", attempts = 1,
+}
+assertEqual(MSR:UpdateAutomaticGroupAssignment(tankRoster), true,
+    "confirmed automatic assignment refreshes Tank markers")
+assertEqual(#tankMarkerCalls, 2, "automatic assignment marks both Tanks")
+assertEqual(tankMarkerCalls[1].icon, 1, "automatic assignment gives first Tank the star")
+assertEqual(tankMarkerCalls[2].icon, 2, "automatic assignment gives second Tank the circle")
 
 local statuses = { player = "ready", raid2 = "notready", raid3 = "waiting" }
 GetReadyCheckStatus = function(unit) return statuses[unit] end
@@ -204,14 +399,16 @@ MSR.BuildRoster = function() return roster end
 assertEqual(MSR:StartManastormLevelOne(), true, "Manastorm start request")
 MSR.BuildRoster = originalBuildRoster
 assertEqual(MSR.char.session.listening, false, "listening stops when Manastorm starts")
-assertEqual(MSR.db.settings.autoPost, false, "auto post stops when Manastorm starts")
+assertEqual(MSR.db.settings.autoPost, true, "Manastorm start preserves enabled Auto-Post setting")
 assertEqual(MSR.char.session.applicants.waiter, nil, "waiting applicant cleared on Manastorm start")
 assertEqual(MSR.char.session.applicants.alice.name, "Alice", "joined applicant retained on Manastorm start")
 assertEqual(#MSR.char.session.order, 1, "only joined applicants remain ordered")
 
-MSR.db.settings.autoPost = true
-MSR:DisableAutoPostForManastorm()
-assertEqual(MSR.db.settings.autoPost, false, "auto post stops for Manastorm")
+MSR.db.settings.autoPost = false
+MSR.char.session.listening = true
+MSR:StopRecruitmentForManastorm()
+assertEqual(MSR.char.session.listening, false, "Manastorm stop helper always disables listener")
+assertEqual(MSR.db.settings.autoPost, false, "Manastorm stop helper preserves disabled Auto-Post setting")
 
 local sentMessage, sentChannel
 GetNumRaidMembers = function() return 3 end
@@ -278,17 +475,18 @@ MSR:HandleWhisper("heal aura yes", "Dedupe")
 assertEqual(automaticReplies, 2, "changed application receives a new reply")
 
 MSR:HandleWhisper("dps", "Clarify")
-assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, "aura", "missing Aura starts clarification")
-assertContains(lastAutomaticReply, "Aura", "missing Aura question is whispered")
-MSR:HandleWhisper("yes", "Clarify")
-assertEqual(MSR.char.session.applicants.clarify.aura, true, "Aura-only answer updates applicant")
-assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, "level", "level is requested after Aura")
+assertEqual(MSR.char.session.applicants.clarify.aura, false, "missing Aura defaults to no Aura")
+assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, "level", "missing Aura does not start clarification")
 assertContains(lastAutomaticReply, "level", "missing level question is whispered")
 MSR:HandleWhisper("42", "Clarify")
 assertEqual(MSR.char.session.applicants.clarify.level, 42, "level-only answer updates applicant")
 assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, nil, "clarification completes after level")
-assertContains(lastAutomaticReply, "Welcome", "completed clarification receives acceptance reply")
-assertEqual(automaticReplies, 5, "Aura, level, and completion each receive one reply")
+assertContains(lastAutomaticReply, "only need players with Aura", "no-Aura applicant receives the configured Aura reservation reply")
+assertEqual(automaticReplies, 4, "level question and completion each receive one reply")
+
+MSR:HandleWhisper("dps aura yes level 42", "ExplicitAura")
+assertEqual(MSR.char.session.applicants.explicitaura.aura, true, "explicit Aura marks the applicant as Aura")
+assertEqual(automaticReplies, 5, "explicit Aura application receives one reply")
 
 MSR.char.session.chatScanEntries = {}
 MSR.char.session.chatScanOrder = {}
@@ -303,6 +501,7 @@ assertEqual(MSR:IsChatScanCandidate("LFG dungeon dps"), false, "LFG without Mana
 assertEqual(MSR:HandlePublicChannelMessage("LFG MS dps loom", "ScanGuy", "1. Ascension", 1, "Ascension"), true, "public Manastorm post is scanned")
 assertEqual(#MSR:GetChatScanEntries(), 1, "scanner records one candidate")
 assertEqual(MSR:GetChatScanEntries()[1].role, "DPS", "scanner infers public-post role")
+assertEqual(MSR:GetChatScanEntries()[1].aura, false, "scanner defaults missing Aura to no Aura")
 assertEqual(MSR:HandlePublicChannelMessage("new LFG MS dps", "ScanGuy", "1. Ascension", 1, "Ascension"), true, "repeated candidate updates")
 assertEqual(#MSR:GetChatScanEntries(), 1, "repeated player is deduplicated")
 assertEqual(MSR:HandlePublicChannelMessage("WTS materials", "Trader", "2. Trade", 2, "Trade"), false, "unrelated public post is ignored")
@@ -310,7 +509,7 @@ local scannerInviteName
 InviteUnit = function(name) scannerInviteName = name return true end
 local originalIsGroupLeader = MSR.IsGroupLeader
 MSR.IsGroupLeader = function() return true end
-assertEqual(MSR:InviteChatScanEntry(MSR:GetChatScanEntries()[1]), true, "scanner candidate can be invited before Aura review")
+assertEqual(MSR:InviteChatScanEntry(MSR:GetChatScanEntries()[1]), true, "scanner candidate can be invited without an Aura declaration")
 assertEqual(scannerInviteName, "ScanGuy", "scanner invites the detected player")
 assertEqual(MSR.char.session.applicants.scanguy.status, "Invited", "scanner invite enters applicant workflow")
 MSR.IsGroupLeader = originalIsGroupLeader
@@ -422,6 +621,40 @@ assertEqual(MSR:AttemptRebuildInvite(false), true, "finished reinvites enter ret
 assertEqual(MSR.runtime.rebuild.phase, "waiting-return", "rebuild waits for returning players")
 assertEqual(MSR.runtime.rebuild.deadline - GetTime(), 10, "rebuild return wait is limited to ten seconds")
 
+local originalGetRemainingRebuildMembers = MSR.GetRemainingRebuildMembers
+local automaticRemaining = { { key = "alice", name = "Alice" } }
+local automaticRemovalCalls, automaticRebuildLeaveCalls = 0, 0
+MSR.GetRemainingRebuildMembers = function() return automaticRemaining end
+UninviteUnit = function()
+    automaticRemovalCalls = automaticRemovalCalls + 1
+    return true
+end
+MSR.IsInManastorm = function() return true end
+C_Manastorm.Leave = function()
+    automaticRebuildLeaveCalls = automaticRebuildLeaveCalls + 1
+    return true
+end
+MSR.char.session.rebuildRecovery = { active = true, stage = "removing" }
+MSR.runtime.rebuild = {
+    phase = "countdown",
+    deadline = GetTime(),
+    snapshot = automaticRemaining,
+    removalSnapshot = automaticRemaining,
+    reinviteSnapshot = {},
+    index = 1,
+}
+MSR:UpdateRebuild()
+assertEqual(automaticRemovalCalls, 1, "rebuild removes stored members automatically after countdown")
+assertEqual(MSR.runtime.rebuild.phase, "waiting-bulk-remove", "automatic rebuild waits for removal confirmation")
+automaticRemaining = {}
+MSR:UpdateRebuild()
+assertEqual(automaticRebuildLeaveCalls, 1, "rebuild leaves Manastorm automatically after removals")
+assertEqual(MSR.runtime.rebuild.phase, "waiting-manastorm-exit", "automatic rebuild waits for Manastorm exit")
+MSR.IsInManastorm = function() return false end
+MSR:UpdateRebuild()
+assertEqual(MSR.runtime.rebuild.phase, "waiting-empty", "automatic rebuild advances to reinvite delay")
+MSR.GetRemainingRebuildMembers = originalGetRemainingRebuildMembers
+
 MSR.runtime.rebuild = nil
 MSR.runtime.rosterByKey = {}
 MSR.char.session.rebuildRecovery = {
@@ -434,6 +667,31 @@ MSR.char.session.rebuildRecovery = {
 MSR.IsInManastorm = function() return false end
 assertEqual(MSR:ResumeRebuild(), true, "unfinished rebuild can be resumed")
 assertEqual(MSR.runtime.rebuild.phase, "inviting", "rebuild recovery resumes at reinvites")
+
+MSR.char.session.applicants.legacyaura = {
+    key = "legacyaura",
+    name = "LegacyAura",
+    role = "DPS",
+    aura = nil,
+    level = 42,
+    needsReview = true,
+    pendingQuestion = "aura",
+    messageHistory = { { message = "dps 42", parsedAura = nil } },
+}
+MSR.char.session.chatScanEntries = {
+    legacychat = { name = "LegacyChat", role = "DPS", roleMatches = 1, aura = nil, needsReview = true },
+}
+MSR.char.session.whisperHistory = {
+    { sender = "LegacyWhisper", role = "DPS", aura = nil, needsReview = true },
+}
+MSR:NormalizeAuraDefaults()
+assertEqual(MSR.char.session.applicants.legacyaura.aura, false, "legacy applicant Aura migrates to no Aura")
+assertEqual(MSR.char.session.applicants.legacyaura.needsReview, false, "legacy applicant no longer needs Aura review")
+assertEqual(MSR.char.session.applicants.legacyaura.pendingQuestion, nil, "legacy Aura question is cleared")
+assertEqual(MSR.char.session.applicants.legacyaura.messageHistory[1].parsedAura, false,
+    "legacy applicant history migrates to no Aura")
+assertEqual(MSR.char.session.chatScanEntries.legacychat.aura, false, "legacy scanner Aura migrates to no Aura")
+assertEqual(MSR.char.session.whisperHistory[1].aura, false, "legacy whisper Aura migrates to no Aura")
 
 MSR.char.session.applicants = { private = { name = "Privateplayer" } }
 MSR.char.session.order = { "private" }

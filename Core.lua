@@ -1,8 +1,8 @@
 ManastormRecruiter = ManastormRecruiter or {}
 local MSR = ManastormRecruiter
 
-MSR.VERSION = "0.6.8"
-MSR.PARSER_VERSION = 5
+MSR.VERSION = "0.6.20"
+MSR.PARSER_VERSION = 6
 MSR.PREFIX = "|cff65d5ff[MSR]|r "
 MSR.ROLE_ORDER = { "TANK", "HEAL", "DPS" }
 MSR.ROLE_LABELS = { TANK = "Tank", HEAL = "Heal", DPS = "DPS", UNKNOWN = "Unknown" }
@@ -20,8 +20,7 @@ MSR.STATUS_COLORS = {
 local MESSAGE_DEFAULTS = {
     recruitment = "LFM MS - {tank}/{tankMax} Tanks - {heal}/{healMax} Healer - {dps}/{dpsMax} DPS - Aura {aura}/{auraMax} - {total}/{totalMax} Total - Need: {needed}{reservation}",
     reservationSuffix = ". Aura required for remaining {roles} slots.",
-    invalidApplicationReply = "Please whisper your role as Tank/Heal/DPS. I will ask separately for any missing Aura or level.",
-    missingAuraReply = "Do you have a Manastorm Aura? Please reply yes or no.",
+    invalidApplicationReply = "Please whisper your role as Tank/Heal/DPS. Aura is optional; mention Aura only if you have one.",
     missingLevelReply = "What level are you? Please reply with a number from 1 to 60.",
     acceptedApplicationReply = "Registered as {role} - Aura: {aura}. Waiting for invite.",
     inviteReminder = "Your group invite is still pending. Please accept within {seconds} seconds or the slot will be released.",
@@ -59,6 +58,7 @@ local DEFAULTS = {
         autoPost = false,
         autoPostInterval = 90,
         autoReply = true,
+        automaticGroupAssignment = true,
         inviteReminderDelay = 5,
         inviteTimeout = 10,
         compactMode = false,
@@ -192,6 +192,8 @@ function MSR:InitializeDatabase()
     self.runtime.lastValidationSignature = ""
     self.runtime.rebuild = nil
     self.runtime.groupOptimization = nil
+    self.runtime.automaticGroupAssignment = nil
+    self.runtime.pendingInviteGroupAssignments = {}
     self.runtime.readyCheck = nil
     self.runtime.pendingLeave = nil
     self.runtime.rebuildRecoveryPrompted = false
@@ -201,6 +203,37 @@ function MSR:InitializeDatabase()
     if previousParserVersion < self.PARSER_VERSION then
         self:ReparseStoredApplicants()
         self.char.parserVersion = self.PARSER_VERSION
+    end
+    self:NormalizeAuraDefaults()
+end
+
+function MSR:NormalizeAuraDefaults()
+    local session = self.char and self.char.session
+    if not session then return end
+
+    for _, applicant in pairs(session.applicants or {}) do
+        if type(applicant) == "table" then
+            if applicant.aura == nil then applicant.aura = false end
+            for _, entry in ipairs(applicant.messageHistory or {}) do
+                if type(entry) == "table" and entry.parsedAura == nil then entry.parsedAura = false end
+            end
+            applicant.needsReview = applicant.role == "UNKNOWN"
+            applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
+        end
+    end
+
+    for _, entry in pairs(session.chatScanEntries or {}) do
+        if type(entry) == "table" then
+            if entry.aura == nil then entry.aura = false end
+            entry.needsReview = entry.role == "UNKNOWN" or (tonumber(entry.roleMatches) or 0) ~= 1
+        end
+    end
+
+    for _, entry in ipairs(session.whisperHistory or {}) do
+        if type(entry) == "table" then
+            if entry.aura == nil then entry.aura = false end
+            entry.needsReview = entry.role == "UNKNOWN"
+        end
     end
 end
 
@@ -379,7 +412,7 @@ function MSR:EnsureApplicant(name)
             key = key,
             name = shortName,
             role = "UNKNOWN",
-            aura = nil,
+            aura = false,
             status = "New",
             message = "",
             messageHistory = {},
@@ -418,6 +451,7 @@ function MSR:HandleRosterChanged()
     if numRaid == 0 and numParty > 0 and self:GetTargetTotal() > 5 and self:IsGroupLeader() and ConvertToRaid then
         pcall(ConvertToRaid)
     end
+    self:UpdateAutomaticGroupAssignment(roster)
     self:ValidateInsideManastorm()
     self:ScanForLevel60()
     self:RefreshUI()
@@ -452,6 +486,7 @@ function MSR:OnUpdate(elapsed)
     self:UpdateRebuild()
     self:UpdatePendingInvites()
     self:UpdatePendingLeave()
+    self:UpdateAutomaticGroupAssignment()
     local now = GetTime()
     if now - (self.runtime.lastRosterScan or 0) >= 1 then
         self.runtime.lastRosterScan = now
@@ -483,6 +518,8 @@ function MSR:HandleSlashCommand(input)
         self.char.session.listening = not self.char.session.listening
         self:Print("Whisper listening: " .. (self.char.session.listening and "ON" or "OFF"))
         self:RefreshUI()
+    elseif command == "groupstatus" then
+        self:PrintAutomaticGroupAssignmentStatus()
     elseif command == "testwhisper" then
         if rest == "" then rest = "dps aura yes" end
         self.char.session.listening = true
@@ -500,7 +537,7 @@ function MSR:HandleSlashCommand(input)
     elseif command == "reset" then
         if self.UI and self.UI.ShowResetConfirmation then self.UI:ShowResetConfirmation() end
     else
-        self:Print("Commands: /msr, /msr post, /msr listen, /msr optimize, /msr testwhisper <text>, /msr test59 <name>, /msr test60 <name>, /msr reset")
+        self:Print("Commands: /msr, /msr post, /msr listen, /msr groupstatus, /msr optimize, /msr testwhisper <text>, /msr test59 <name>, /msr test60 <name>, /msr reset")
     end
 end
 

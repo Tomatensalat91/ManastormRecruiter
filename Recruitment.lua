@@ -172,7 +172,6 @@ function MSR:PostRecruitment(isAutomatic)
     end
     local ok, err = pcall(SendChatMessage, message, "CHANNEL", nil, channelId)
     if not ok then self:LocalWarning("Unable to post: " .. tostring(err)) return false end
-    self.char.session.listening = true
     self.char.session.lastPostAt = time()
     self:RefreshUI()
     return true
@@ -185,29 +184,31 @@ function MSR:StartRecruitment()
         return false
     end
     self.char.session.listening = true
-    self.db.settings.autoPost = true
-    self.char.session.lastPostAt = time()
     self.runtime.lastAutoPostAttempt = nil
-    self:Print(string.format(
-        "Recruitment automation enabled. Applicant whispers are active; the first automatic post is due in %d seconds.",
-        tonumber(self.db.settings.autoPostInterval) or 90
-    ))
+    if self.db.settings.autoPost then
+        self.char.session.lastPostAt = time()
+        self:Print(string.format(
+            "Recruit listener enabled. Whispers and Chat Scanner are active; the first automatic post is due in %d seconds.",
+            tonumber(self.db.settings.autoPostInterval) or 90
+        ))
+    else
+        self:Print("Recruit listener enabled. Whispers and Chat Scanner are active; use Post recruiting msg for manual posts.")
+    end
     self:RefreshUI()
     return true
 end
 
 function MSR:StopRecruitment()
-    local wasRunning = self.char.session.listening == true or self.db.settings.autoPost == true
+    local wasRunning = self.char.session.listening == true
     self.char.session.listening = false
-    self.db.settings.autoPost = false
     self.runtime.lastAutoPostAttempt = nil
-    if wasRunning then self:Print("Recruitment stopped. Automatic posts and applicant whispers are paused.") end
+    if wasRunning then self:Print("Recruit listener disabled. Whispers and Chat Scanner are paused; the Auto-Post setting was not changed.") end
     self:RefreshUI()
     return true
 end
 
 function MSR:IsRecruitmentRunning()
-    return self.char.session.listening == true and self.db.settings.autoPost == true
+    return self.char.session.listening == true
 end
 
 function MSR:ToggleRecruitment()
@@ -217,8 +218,8 @@ end
 
 function MSR:InviteApplicant(applicant)
     if not applicant then return false end
-    if applicant.role == "UNKNOWN" or applicant.aura == nil then
-        self:LocalWarning(applicant.name .. " needs a confirmed role and Aura yes/no before inviting.")
+    if applicant.role == "UNKNOWN" then
+        self:LocalWarning(applicant.name .. " needs a confirmed role before inviting.")
         return false
     end
     if not self:IsGroupLeader() then self:LocalWarning("You must be group leader to invite players.") return end
@@ -247,6 +248,7 @@ function MSR:InviteApplicant(applicant)
         applicant.updatedAt = time()
         applicant.inviteSentAt = time()
         applicant.inviteReminderSent = false
+        self:PlanAutomaticInviteGroupAssignment(applicant)
         self:Print("Invite sent to " .. applicant.name .. ".")
     else
         self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. tostring(err))
@@ -331,7 +333,7 @@ function MSR:GetApplicantPriority(applicant, counts)
     elseif applicant.status == "NoResponse" then score = score + 250
     elseif applicant.status == "Reserve" then score = score + 100 end
 
-    if applicant.role ~= "UNKNOWN" and applicant.aura ~= nil then score = score + 100
+    if applicant.role ~= "UNKNOWN" then score = score + 100
     else score = score - 200 end
 
     local roleKey = applicant.role == "TANK" and "tank"
@@ -432,7 +434,7 @@ function MSR:HandlePublicChannelMessage(message, sender, channelName, channelNum
     entry.name = shortName
     entry.message = tostring(message or "")
     entry.role = role
-    entry.aura = aura
+    entry.aura = aura == true
     entry.needsReview = needsReview
     entry.roleMatches = roleMatches
     entry.level = self:ParseApplicantLevel(message)
@@ -468,10 +470,10 @@ function MSR:InviteChatScanEntry(entry)
     end
     local applicant = self:EnsureApplicant(entry.name)
     if entry.role and entry.role ~= "UNKNOWN" then applicant.role = entry.role end
-    if entry.aura ~= nil then applicant.aura = entry.aura end
+    applicant.aura = entry.aura == true
     self:SetApplicantLevel(applicant, entry.level)
     applicant.message = entry.message or applicant.message
-    applicant.needsReview = applicant.role == "UNKNOWN" or applicant.aura == nil
+    applicant.needsReview = applicant.role == "UNKNOWN"
     applicant.pendingQuestion = self:GetApplicantMissingField(applicant)
     applicant.updatedAt = time()
     applicant.messageHistory = applicant.messageHistory or {}
@@ -505,6 +507,7 @@ function MSR:InviteChatScanEntry(entry)
         applicant.inviteSentAt = time()
         applicant.inviteReminderSent = false
         entry.invitedAt = time()
+        self:PlanAutomaticInviteGroupAssignment(applicant)
         self:Print("Chat Scanner invite sent to " .. applicant.name .. ".")
     else
         self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. tostring(err))

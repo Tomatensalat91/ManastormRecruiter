@@ -117,8 +117,9 @@ function MSR:ResumeRebuild()
         if self.runtime.rosterByKey[member.key] then storedPresent = true break end
     end
     local removalIncomplete = (recovery.stage or "removing") == "removing" and storedPresent
-    local resumePhase = removalIncomplete and "manual-remove-all"
-        or (self:IsInManastorm() and "manual-leave-manastorm" or "inviting")
+    local needsManastormExit = not removalIncomplete and self:IsInManastorm()
+    local resumePhase = removalIncomplete and "automatic-remove-all"
+        or (needsManastormExit and "automatic-leave-manastorm" or "inviting")
     self.runtime.rebuild = {
         phase = resumePhase,
         snapshot = removalIncomplete and recovery.removalSnapshot or recovery.reinviteSnapshot,
@@ -134,9 +135,15 @@ function MSR:ResumeRebuild()
         recovered = true,
     }
     self.runtime.rebuildRecoveryPrompted = true
-    self:PrivateWarning(removalIncomplete
-        and "Raid rebuild restored. Click Remove all to continue safely."
-        or "Raid rebuild restored. Reinvites will continue now.")
+    if removalIncomplete then
+        self:Print("Raid rebuild restored. Remaining removals continue automatically.")
+        self:AttemptBulkRebuildRemoval()
+    elseif needsManastormExit then
+        self:Print("Raid rebuild restored. Manastorm exit continues automatically.")
+        self:AttemptLeaveManastorm(false)
+    else
+        self:Print("Raid rebuild restored. Reinvites continue automatically.")
+    end
     self:RefreshUI()
     return true
 end
@@ -251,11 +258,8 @@ function MSR:HandleAllRebuildMembersRemoved()
         self:StartRebuildReinviteDelay()
         return true
     end
-    self:RequireManualRebuildAction(
-        "manual-leave-manastorm",
-        "All raid members are removed. Click Leave Manastorm to exit before reinviting."
-    )
-    return false
+    self:Print("All raid members are removed. Leaving Manastorm automatically.")
+    return self:AttemptLeaveManastorm(false)
 end
 
 function MSR:AttemptBulkRebuildRemoval()
@@ -271,6 +275,14 @@ function MSR:AttemptBulkRebuildRemoval()
     for _, member in ipairs(remaining) do
         local ok, result = pcall(UninviteUnit, member.name)
         if not ok or result == false then failures = failures + 1 end
+    end
+    rebuild.bulkAttempts = (tonumber(rebuild.bulkAttempts) or 0) + 1
+    if failures == #remaining then
+        self:RequireManualRebuildAction(
+            "manual-remove-all",
+            "Ascension rejected the automatic removals. Click Remove all once to continue."
+        )
+        return false
     end
     rebuild.phase = "waiting-bulk-remove"
     rebuild.confirmDeadline = GetTime() + 2
@@ -374,11 +386,11 @@ function MSR:AttemptRebuildInvite(isManual)
 
     local applicant = self:EnsureApplicant(member.name)
     applicant.role = member.role
-    applicant.aura = member.aura
+    applicant.aura = member.aura == true
     applicant.status = "Invited"
     applicant.inviteSentAt = time()
     applicant.inviteReminderSent = false
-    applicant.needsReview = member.role == "UNKNOWN" or member.aura == nil
+    applicant.needsReview = member.role == "UNKNOWN"
     applicant.updatedAt = time()
     self:Print((isManual and "Manual" or "Automatic") .. " reinvite sent to " .. member.name .. ".")
     rebuild.index = rebuild.index + 1
@@ -406,20 +418,28 @@ function MSR:UpdateRebuild()
 
     if rebuild.phase == "countdown" then
         if now >= rebuild.deadline then
-            rebuild.phase = "manual-remove-all"
             rebuild.index = 1
-            self:PrivateWarning("Click Remove all once to remove every stored raid member.")
+            self:Print("Rebuild countdown finished. Removing stored raid members automatically.")
+            self:AttemptBulkRebuildRemoval()
         end
     elseif rebuild.phase == "waiting-bulk-remove" then
         local remaining = self:GetRemainingRebuildMembers()
         if #remaining == 0 then
             self:HandleAllRebuildMembersRemoved()
         elseif now >= (rebuild.confirmDeadline or 0) then
-            rebuild.phase = "manual-remove-all"
-            self:PrivateWarning(string.format(
-                "%d raid member(s) are still present. Click Remove all again to retry only those players.",
-                #remaining
-            ))
+            if (tonumber(rebuild.bulkAttempts) or 0) < 2 then
+                self:Print(string.format(
+                    "%d raid member(s) are still present. Retrying those removals automatically.",
+                    #remaining
+                ))
+                self:AttemptBulkRebuildRemoval()
+            else
+                rebuild.phase = "manual-remove-all"
+                self:PrivateWarning(string.format(
+                    "%d raid member(s) are still present after automatic retries. Click Remove all once to continue.",
+                    #remaining
+                ))
+            end
         end
     elseif rebuild.phase == "waiting-manastorm-exit" then
         if not self:IsInManastorm() then

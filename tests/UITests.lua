@@ -17,6 +17,18 @@ local function NewFrame()
     function frame:SetTexture(value) self.texture = value end
     function frame:SetChecked(value) self.checked = value end
     function frame:GetChecked() return self.checked and 1 or nil end
+    function frame:SetAttribute(key, value)
+        local attributes = rawget(self, "attributes")
+        if type(attributes) ~= "table" then
+            attributes = {}
+            rawset(self, "attributes", attributes)
+        end
+        attributes[key] = value
+    end
+    function frame:GetAttribute(key)
+        local attributes = rawget(self, "attributes")
+        return type(attributes) == "table" and attributes[key] or nil
+    end
     function frame:Show() self.shown = true end
     function frame:Hide() self.shown = false end
     function frame:IsShown() return self.shown end
@@ -65,7 +77,11 @@ local function NewFrame()
     return frame
 end
 
-CreateFrame = function() return NewFrame() end
+CreateFrame = function(_, _, _, template)
+    local frame = NewFrame()
+    frame.template = template
+    return frame
+end
 UIParent = NewFrame()
 UIParent:SetWidth(1200)
 UIParent:SetHeight(680)
@@ -112,7 +128,6 @@ assertTrue(UI.messageTemplatesFrame, "message template frame")
 assertTrue(UI.messageTemplatesFrame.movable, "message template frame is movable")
 assertTrue(UI.messageEditorFrame.movable, "message editor frame is movable")
 assertTrue(UI.messageButtons.recruitment, "recruitment template button")
-assertTrue(UI.messageButtons.missingAuraReply, "missing Aura question template button")
 assertTrue(UI.messageButtons.missingLevelReply, "missing level question template button")
 assertTrue(UI.messageEditorFrame, "single-message editor frame")
 assertTrue(UI.messageEditorInput, "single-message editor input")
@@ -139,7 +154,7 @@ assertTrue(UI.waitingCountText, "waiting count is displayed as a passive badge")
 assertTrue(UI.joinedApplicantsTab == nil, "joined players are shown only on the raid groups page")
 assertTrue(UI.recruitToggleActionButton:IsShown(), "recruitment toggle shown")
 assertTrue(UI.recruitToggleActionButton.points[1][1] == "BOTTOMLEFT", "recruitment toggle has a fixed anchor")
-assertContains(UI.recruitToggleActionButton:GetText(), "Auto recruit", "recruitment toggle describes automation")
+assertContains(UI.recruitToggleActionButton:GetText(), "Recruit listener", "recruitment toggle describes listeners")
 assertTrue(UI.frame:GetHeight() == 680, "mission-control workspace uses a stable height")
 assertTrue(UI.recruitToggleActionButton.stateColor == "red", "stopped recruitment toggle is red")
 local savedGetChatScanEntries = ManastormRecruiter.GetChatScanEntries
@@ -148,9 +163,13 @@ UI:RefreshChatScanner()
 assertContains(UI.chatScannerStatus:GetText(), "SCANNER UNAVAILABLE", "missing scanner API cannot abort the UI")
 ManastormRecruiter.GetChatScanEntries = savedGetChatScanEntries
 ManastormRecruiter.char.session.listening = true
+ManastormRecruiter.db.settings.autoPost = false
+UI:Refresh()
+assertTrue(UI.recruitToggleActionButton.stateColor == "green", "active listener toggle is green without Auto-Post")
+assertTrue(UI.manualRecruitmentActionButton:IsShown(), "manual recruitment button is shown when Auto-Post is off")
 ManastormRecruiter.db.settings.autoPost = true
 UI:Refresh()
-assertTrue(UI.recruitToggleActionButton.stateColor == "green", "running recruitment toggle is green")
+assertTrue(not UI.manualRecruitmentActionButton:IsShown(), "manual recruitment button is hidden when Auto-Post is on")
 assertTrue(ManastormRecruiter:HandlePublicChannelMessage(
     "LFG MS dps loom", "PublicPlayer", "1. Ascension", 1, "Ascension"
 ), "public recruitment post reaches the scanner")
@@ -168,6 +187,13 @@ ManastormRecruiter:ClearChatScan()
 ManastormRecruiter.char.session.listening = false
 ManastormRecruiter.db.settings.autoPost = false
 UI:Refresh()
+assertTrue(UI.manualRecruitmentActionButton:IsShown(), "manual recruitment button remains available with listener off")
+UI.autoPostCheck:SetChecked(true)
+UI.autoPostCheck.scripts.OnClick(UI.autoPostCheck)
+assertTrue(ManastormRecruiter.char.session.listening == false,
+    "enabling Auto-Post in settings does not enable the listener")
+UI.autoPostCheck:SetChecked(false)
+UI.autoPostCheck.scripts.OnClick(UI.autoPostCheck)
 assertTrue(UI.settingsEditMessagesButton, "message editor action lives in settings")
 assertTrue(UI.settingsPanel:GetAlpha() == 0, "closed settings backdrop is transparent")
 assertTrue(not UI.optimizeButton:IsShown(), "raid actions hidden during recruitment")
@@ -254,21 +280,21 @@ for _, row in ipairs(UI.applicantRows) do
 end
 assertTrue(messagePreviewFound, "applicant page previews the most recent message")
 assertTrue(applicantIconsFound, "applicant page uses role and custom Aura icons")
-editableApplicant.aura = nil
+editableApplicant.aura = false
 UI:RefreshApplicants()
-local unknownAuraIconFound = false
+local noAuraIconFound = false
 local editableApplicantRow
 for _, row in ipairs(UI.applicantRows) do
     if row.applicant == editableApplicant then
         editableApplicantRow = row
-        unknownAuraIconFound = row.auraButton.auraState == "unknown"
+        noAuraIconFound = row.auraButton.auraState == "no"
             and row.auraButton.icon.texture == "Interface\\AddOns\\ManastormRecruiter\\Assets\\AuraBonusXP.tga"
             and row.auraButton.icon.width == row.auraButton.icon.height
             and row.auraButton.noAuraSlashes[1]:IsShown()
             and row.auraButton.noAuraSlashes[2]:IsShown()
     end
 end
-assertTrue(unknownAuraIconFound, "unknown Aura uses the square crossed-out Aura icon")
+assertTrue(noAuraIconFound, "default no-Aura state uses the square crossed-out Aura icon")
 local restingRoleBorder = editableApplicantRow.roleButton.backdropBorderColor[1]
 editableApplicantRow.roleButton.scripts.OnEnter(editableApplicantRow.roleButton)
 assertTrue(editableApplicantRow.roleButton.backdropBorderColor[1] ~= restingRoleBorder,
@@ -306,7 +332,34 @@ assertTrue(UI.groupCards[1].rows[1].roleButton.width == 30
     "raid role control is square")
 assertTrue(UI.groupCards[1].rows[1].auraButton.icon.width == UI.groupCards[1].rows[1].auraButton.icon.height,
     "raid Aura texture is square")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton ~= nil,
+    "Tank rows expose a direct MT button")
+assertTrue(rawget(UI.groupCards[1].rows[1].mainTankButton, "template") == nil,
+    "MT button remains a normal button and does not protect the movable addon frame")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton:IsShown(), "MT button is shown for Tanks")
 assertTrue(not UI.groupCards[1].rows[1].kickButton:IsEnabled(), "self kick button disabled")
+
+local ownAssignmentReason
+local originalQueueSelfAutomaticGroupAssignment = ManastormRecruiter.QueueSelfAutomaticGroupAssignment
+ManastormRecruiter.QueueSelfAutomaticGroupAssignment = function(_, reason)
+    ownAssignmentReason = reason
+    return true
+end
+UI:CycleRosterMemberRole(member)
+assertTrue(ownAssignmentReason == "own role changed", "own raid-row role edit queues automatic assignment")
+UI:ToggleRosterMemberAura(member)
+assertTrue(ownAssignmentReason == "own Aura changed", "own raid-row Aura edit queues automatic assignment")
+ManastormRecruiter.QueueSelfAutomaticGroupAssignment = originalQueueSelfAutomaticGroupAssignment
+
+assertTrue(UI.automaticGroupsCheck ~= nil, "settings expose automatic group assignment toggle")
+UI.automaticGroupsCheck:SetChecked(false)
+UI.automaticGroupsCheck.scripts.OnClick(UI.automaticGroupsCheck)
+assertTrue(ManastormRecruiter.db.settings.automaticGroupAssignment == false,
+    "settings toggle disables automatic group assignment")
+UI.automaticGroupsCheck:SetChecked(true)
+UI.automaticGroupsCheck.scripts.OnClick(UI.automaticGroupsCheck)
+assertTrue(ManastormRecruiter.db.settings.automaticGroupAssignment == true,
+    "settings toggle enables automatic group assignment")
 
 UnitLevel = function() return 59 end
 GetNumPartyMembers = function() return 1 end
