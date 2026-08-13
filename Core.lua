@@ -1,7 +1,7 @@
 ManastormRecruiter = ManastormRecruiter or {}
 local MSR = ManastormRecruiter
 
-MSR.VERSION = "0.6.20"
+MSR.VERSION = "0.6.21"
 MSR.PARSER_VERSION = 6
 MSR.PREFIX = "|cff65d5ff[MSR]|r "
 MSR.ROLE_ORDER = { "TANK", "HEAL", "DPS" }
@@ -91,6 +91,7 @@ local CHAR_DEFAULTS = {
         whisperHistory = {},
         chatScanEntries = {},
         chatScanOrder = {},
+        automaticInviteGroupAssignments = {},
         rebuildRecovery = { active = false },
     },
 }
@@ -194,6 +195,7 @@ function MSR:InitializeDatabase()
     self.runtime.groupOptimization = nil
     self.runtime.automaticGroupAssignment = nil
     self.runtime.pendingInviteGroupAssignments = {}
+    self.runtime.automaticGroupKnownMembers = nil
     self.runtime.readyCheck = nil
     self.runtime.pendingLeave = nil
     self.runtime.rebuildRecoveryPrompted = false
@@ -205,6 +207,9 @@ function MSR:InitializeDatabase()
         self.char.parserVersion = self.PARSER_VERSION
     end
     self:NormalizeAuraDefaults()
+    if self.RestoreAutomaticInviteGroupAssignments then
+        self:RestoreAutomaticInviteGroupAssignments(false)
+    end
 end
 
 function MSR:NormalizeAuraDefaults()

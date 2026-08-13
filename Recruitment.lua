@@ -312,6 +312,7 @@ function MSR:ClearSession()
     session.whisperHistory = {}
     session.chatScanEntries = {}
     session.chatScanOrder = {}
+    session.automaticInviteGroupAssignments = {}
     session.rebuildRecovery = { active = false }
     session.lastPostAt = 0
     session.listening = false

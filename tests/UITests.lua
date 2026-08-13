@@ -56,8 +56,9 @@ local function NewFrame()
     function frame:Disable() self.enabled = false end
     function frame:IsEnabled() return self.enabled ~= false end
     function frame:GetFrameLevel() return 1 end
-    function frame:GetCenter() return 0, 0 end
-    function frame:GetEffectiveScale() return 1 end
+    function frame:GetCenter() return rawget(self, "centerX") or 0, rawget(self, "centerY") or 0 end
+    function frame:GetEffectiveScale() return rawget(self, "effectiveScale") or 1 end
+    function frame:SetScale(value) self.scale = value end
     function frame:SetScript(name, handler)
         local scripts = rawget(self, "scripts")
         if type(scripts) ~= "table" then
@@ -77,8 +78,9 @@ local function NewFrame()
     return frame
 end
 
-CreateFrame = function(_, _, _, template)
+CreateFrame = function(_, _, parent, template)
     local frame = NewFrame()
+    frame.parent = parent
     frame.template = template
     return frame
 end
@@ -322,6 +324,14 @@ local member = {
 }
 ManastormRecruiter.BuildRoster = function() return { member } end
 ManastormRecruiter.runtime.readyCheck = ManastormRecruiter:CreateReadyCheckState({ member }, "Leader")
+local pageBeforeSecureMainTankTest = UI.activePage
+UI.activePage = "raid"
+UI.frame:Show()
+local secureMainTankButton = UI.groupCards[1].rows[1].mainTankButton
+secureMainTankButton.positionAnchor.centerX = 420
+secureMainTankButton.positionAnchor.centerY = 310
+secureMainTankButton.positionAnchor.effectiveScale = 0.8
+UIParent.effectiveScale = 0.64
 UI:RefreshGroups()
 assertContains(UI.groupCards[1].rows[1].nameText:GetText(), "Longplayername", "full raid-row player name")
 assertContains(UI.groupCards[1].rows[1].readyText:GetText(), "R", "ready result shown in player row")
@@ -333,11 +343,45 @@ assertTrue(UI.groupCards[1].rows[1].roleButton.width == 30
 assertTrue(UI.groupCards[1].rows[1].auraButton.icon.width == UI.groupCards[1].rows[1].auraButton.icon.height,
     "raid Aura texture is square")
 assertTrue(UI.groupCards[1].rows[1].mainTankButton ~= nil,
-    "Tank rows expose a direct MT button")
-assertTrue(rawget(UI.groupCards[1].rows[1].mainTankButton, "template") == nil,
-    "MT button remains a normal button and does not protect the movable addon frame")
+    "Tank rows expose a secure MT button")
+assertTrue(rawget(UI.groupCards[1].rows[1].mainTankButton, "template") == "SecureActionButtonTemplate",
+    "MT assignment uses a secure action button")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton.parent == UIParent,
+    "secure MT button stays detached from the movable addon frame")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton:GetAttribute("type") == "macro",
+    "secure MT button executes a macro")
+assertContains(UI.groupCards[1].rows[1].mainTankButton:GetAttribute("macrotext"), "/mt Longplayername",
+    "secure MT macro targets the selected Tank")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton.points[1][4] == 420
+    and UI.groupCards[1].rows[1].mainTankButton.points[1][5] == 310,
+    "secure MT position keeps the anchor's UIParent coordinates")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton.scale == 1.25,
+    "secure MT size follows the source row's effective scale")
+assertTrue(UI.groupCards[1].rows[1].mainTankButton.scripts.OnClick == nil,
+    "secure MT button does not call protected APIs from insecure Lua")
 assertTrue(UI.groupCards[1].rows[1].mainTankButton:IsShown(), "MT button is shown for Tanks")
 assertTrue(not UI.groupCards[1].rows[1].kickButton:IsEnabled(), "self kick button disabled")
+local originalMtGetNumRaidMembers = GetNumRaidMembers
+local originalMtIsRaidLeader = IsRaidLeader
+local originalMtIsRaidOfficer = IsRaidOfficer
+GetNumRaidMembers = function() return 1 end
+IsRaidLeader = function() return false end
+IsRaidOfficer = function() return false end
+UI:RefreshGroups()
+assertTrue(secureMainTankButton:IsShown(),
+    "MT button remains visible while rebuild raid permissions are settling")
+assertTrue(not secureMainTankButton:IsEnabled(),
+    "MT button is disabled without raid management rights")
+IsRaidOfficer = function() return true end
+UI:RefreshGroups()
+assertTrue(secureMainTankButton:IsShown() and secureMainTankButton:IsEnabled(),
+    "raid assistants can use the visible secure MT button")
+GetNumRaidMembers = originalMtGetNumRaidMembers
+IsRaidLeader = originalMtIsRaidLeader
+IsRaidOfficer = originalMtIsRaidOfficer
+UI.activePage = pageBeforeSecureMainTankTest
+UI:HideSecureMainTankButtons()
+UIParent.effectiveScale = 1
 
 local ownAssignmentReason
 local originalQueueSelfAutomaticGroupAssignment = ManastormRecruiter.QueueSelfAutomaticGroupAssignment

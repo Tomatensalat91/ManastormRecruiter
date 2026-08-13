@@ -325,8 +325,14 @@ function UI:CreateMainFrame()
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
-    frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    frame:SetScript("OnDragStart", function(self)
+        UI:HideSecureMainTankButtons()
+        self:StartMoving()
+    end)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        UI:RefreshSecureMainTankButtons()
+    end)
     SetBackdrop(frame)
 
     local glow = frame:CreateTexture(nil, "BACKGROUND")
@@ -378,6 +384,7 @@ function UI:ApplyWindowScale()
     if self.compactButton then
         self.compactButton:SetText(MSR.db.settings.compactMode and "FULL SIZE UI" or "COMPACT UI")
     end
+    self:RefreshSecureMainTankButtons()
 end
 
 function UI:GetDesiredFrameHeight(phase, settingsOpen)
@@ -1421,6 +1428,113 @@ function UI:ToggleRosterMemberAura(member)
     MSR:ToggleApplicantAura(applicant)
 end
 
+-- Main-Tank assignment is protected by Ascension. Keep the secure click target
+-- independent from the movable addon window; parenting or anchoring it to a row
+-- would protect the whole Mission Control frame. The small row-local frame is
+-- only a position marker for the detached secure button.
+function UI:PositionSecureMainTankButton(button)
+    if not button or not button.positionAnchor then return false end
+    if InCombatLockdown and InCombatLockdown() then return false end
+    local x, y = button.positionAnchor:GetCenter()
+    if not x or not y then return false end
+    local anchorScale = button.positionAnchor:GetEffectiveScale() or 1
+    local parentScale = UIParent:GetEffectiveScale() or 1
+    if parentScale <= 0 then parentScale = 1 end
+    button:SetScale(anchorScale / parentScale)
+    button:ClearAllPoints()
+    -- GetCenter already returns coordinates in UIParent's logical coordinate
+    -- space on the Ascension client. Scaling these values again moves detached
+    -- controls toward the lower-left corner. Only the button dimensions need
+    -- the effective-scale ratio; the anchor coordinates must stay unchanged.
+    button:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+    return true
+end
+
+function UI:HideSecureMainTankButtons()
+    if InCombatLockdown and InCombatLockdown() then return false end
+    for _, button in ipairs(self.secureMainTankButtons or {}) do
+        button:Hide()
+    end
+    return true
+end
+
+function UI:RefreshSecureMainTankButtons()
+    if InCombatLockdown and InCombatLockdown() then return false end
+    local frameVisible = self.frame and self.frame:IsShown()
+    local raidPageVisible = frameVisible and self.activePage == "raid"
+    for _, button in ipairs(self.secureMainTankButtons or {}) do
+        local member = button.pendingMember
+        -- Keep the MT control visible for every Tank row. Ascension can report
+        -- IsRaidLeader() inconsistently while a rebuilt party is converted back
+        -- into a raid; hiding the secure button in that transient state made it
+        -- look as if the control had been removed. Permission only controls the
+        -- enabled state and accepts both raid leader and assistant rights.
+        local visible = raidPageVisible and member and member.role == "TANK"
+        if visible and self:PositionSecureMainTankButton(button) then
+            local safeName = tostring(member.name or ""):gsub("[\r\n;]", "")
+            button.member = member
+            button:SetAttribute("type", "macro")
+            button:SetAttribute("macrotext", "/stopmacro [combat]\n/mt " .. safeName)
+            if MSR:CanManageRaid() then button:Enable() else button:Disable() end
+            button:Show()
+        else
+            button.member = false
+            button:SetAttribute("macrotext", "")
+            button:Hide()
+        end
+    end
+    return true
+end
+
+function UI:CreateSecureMainTankButton(row)
+    local anchor = CreateFrame("Frame", nil, row)
+    anchor:SetWidth(27)
+    anchor:SetHeight(21)
+    anchor:SetPoint("RIGHT", row, "RIGHT", -22, 0)
+
+    local button = CreateFrame("Button", nil, UIParent, "SecureActionButtonTemplate")
+    button:SetWidth(27)
+    button:SetHeight(21)
+    button:SetFrameStrata("DIALOG")
+    button:SetFrameLevel((self.frame and self.frame:GetFrameLevel() or 1) + 20)
+    SetBackdrop(button, COLORS.raised, COLORS.borderSoft)
+    local label = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("CENTER", button, "CENTER", 0, 0)
+    label:SetTextColor(COLORS.text[1], COLORS.text[2], COLORS.text[3], 1)
+    label:SetText("MT")
+    button:SetFontString(label)
+    button:SetAttribute("type", "macro")
+    button:SetAttribute("macrotext", "")
+    button.positionAnchor = anchor
+    button.pendingMember = false
+    button.member = false
+    button:SetScript("PostClick", function(secureButton)
+        if secureButton.member then
+            MSR:Print("Secure /mt request sent for " .. tostring(secureButton.member.name) .. ".")
+            MSR:MarkTanks(MSR:BuildRoster())
+            MSR:RefreshUI()
+        end
+    end)
+    button:SetScript("OnEnter", function(secureButton)
+        ApplyButtonHover(secureButton)
+        GameTooltip:SetOwner(secureButton, "ANCHOR_RIGHT")
+        if secureButton.member then
+            GameTooltip:SetText("Set Main Tank: " .. tostring(secureButton.member.name), COLORS.cyan[1], COLORS.cyan[2], COLORS.cyan[3])
+            if MSR:CanManageRaid() then
+                GameTooltip:AddLine("Secure /mt click. Available out of combat.", 1, 1, 1, true)
+            else
+                GameTooltip:AddLine("Raid leader or assistant rights are required.", 1, 0.4, 0.4, true)
+            end
+        end
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function(secureButton) RestoreButtonBackdrop(secureButton) GameTooltip:Hide() end)
+    button:Hide()
+    self.secureMainTankButtons = self.secureMainTankButtons or {}
+    table.insert(self.secureMainTankButtons, button)
+    return button
+end
+
 function UI:CreateGroupCard(parent, group)
     local card = CreateFrame("Frame", nil, parent)
     card:SetWidth(405)
@@ -1490,20 +1604,7 @@ function UI:CreateGroupCard(parent, group)
         ready:SetJustifyH("CENTER")
         row.readyText = ready
 
-        local mainTank = CreateButton(row, "MT", 27, 21)
-        mainTank:SetPoint("RIGHT", row, "RIGHT", -22, 0)
-        mainTank:SetScript("OnClick", function(button) MSR:AssignMainTank(button.member) end)
-        mainTank:SetScript("OnEnter", function(button)
-            ApplyButtonHover(button)
-            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
-            if button.member then
-                GameTooltip:SetText("Set Main Tank: " .. tostring(button.member.name), COLORS.cyan[1], COLORS.cyan[2], COLORS.cyan[3])
-                GameTooltip:AddLine("Direct click assignment. No chat confirmation is required.", 1, 1, 1, true)
-            end
-            GameTooltip:Show()
-        end)
-        mainTank:SetScript("OnLeave", function(button) RestoreButtonBackdrop(button) GameTooltip:Hide() end)
-        mainTank:Hide()
+        local mainTank = self:CreateSecureMainTankButton(row)
         row.mainTankButton = mainTank
 
         local kick = CreateButton(row, "X", 18, 21)
@@ -2138,13 +2239,7 @@ function UI:RefreshGroups()
                     or readyStatus == "notready" and "|cffff5555N|r"
                     or readyStatus == "waiting" and "|cffffcc55?|r"
                     or "")
-                row.mainTankButton.member = member
-                if member.role == "TANK" and MSR:IsGroupLeader() then
-                    row.mainTankButton:Show()
-                    row.mainTankButton:Enable()
-                else
-                    row.mainTankButton:Hide()
-                end
+                row.mainTankButton.pendingMember = member
                 row.kickButton.member = member
                 row.kickButton:Show()
                 local canKick = MSR:CanKickRosterMember(member)
@@ -2159,8 +2254,7 @@ function UI:RefreshGroups()
                 row.auraButton.member = nil
                 row.auraButton:Hide()
                 row.readyText:SetText("")
-                row.mainTankButton.member = nil
-                row.mainTankButton:Hide()
+                row.mainTankButton.pendingMember = false
                 row.kickButton.member = nil
                 row.kickButton:Hide()
             end
@@ -2175,6 +2269,7 @@ function UI:RefreshGroups()
         ROLE_ICONS.HEAL, counts.heal, slots.heal, ROLE_ICONS.DPS, counts.dps, slots.dps,
         counts.aura, slots.aura
     ))
+    self:RefreshSecureMainTankButtons()
 end
 
 function UI:Refresh()
@@ -2232,7 +2327,7 @@ end
 
 function UI:Toggle()
     if not self.frame then return end
-    if self.frame:IsShown() then self.frame:Hide()
+    if self.frame:IsShown() then self:HideSecureMainTankButtons() self.frame:Hide()
     else self.frame:Show() self:RefreshSettings() self:Refresh() end
 end
 
@@ -2264,6 +2359,7 @@ function MSR:CreateUI()
     UI:RefreshGroupChat()
     UI:Refresh()
     UI.frame:Hide()
+    UI:HideSecureMainTankButtons()
 end
 
 StaticPopupDialogs["MSR_RESUME_REBUILD"] = {

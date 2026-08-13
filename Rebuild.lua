@@ -46,6 +46,15 @@ function MSR:BeginRebuild()
     local reinviteByKey = {}
     for _, member in ipairs(reinviteSnapshot) do reinviteByKey[member.key] = true end
 
+    -- A rebuild replaces the current raid with a fresh sequence of invites.
+    -- Discard targets calculated for the old roster; every reinvite is armed
+    -- again below and will be evaluated after all returning players are known.
+    self.runtime.automaticGroupAssignment = nil
+    self.runtime.pendingInviteGroupAssignments = {}
+    self.runtime.groupOptimization = nil
+    self.runtime.automaticGroupKnownMembers = nil
+    self.char.session.automaticInviteGroupAssignments = {}
+
     self.char.session.lastRebuildRoster = reinviteSnapshot
     self.char.session.rebuildRecovery = {
         active = true,
@@ -85,6 +94,20 @@ function MSR:CancelRebuild()
     self.char.session.rebuildRecovery = { active = false }
     self:Print("Raid rebuild cancelled.")
     self:RefreshUI()
+end
+
+function MSR:PrepareRebuildApplicant(member, status)
+    if not member or not member.name then return nil end
+    local applicant = self:EnsureApplicant(member.name)
+    applicant.role = member.role
+    applicant.aura = member.aura == true
+    applicant.status = status or "Invited"
+    applicant.inviteSentAt = time()
+    applicant.inviteReminderSent = false
+    applicant.needsReview = member.role == "UNKNOWN"
+    applicant.updatedAt = time()
+    self:PlanAutomaticInviteGroupAssignment(applicant, "raid rebuild reinvite", true)
+    return applicant
 end
 function MSR:HasRebuildRecovery()
     local recovery = self.char and self.char.session and self.char.session.rebuildRecovery
@@ -370,6 +393,7 @@ function MSR:AttemptRebuildInvite(isManual)
     self:SetRebuildRecoveryStage("reinviting")
     self:BuildRoster()
     if self.runtime.rosterByKey[member.key] then
+        self:PrepareRebuildApplicant(member, "Joined")
         rebuild.index = rebuild.index + 1
         rebuild.phase = "inviting"
         rebuild.nextAction = GetTime()
@@ -384,14 +408,7 @@ function MSR:AttemptRebuildInvite(isManual)
         return false
     end
 
-    local applicant = self:EnsureApplicant(member.name)
-    applicant.role = member.role
-    applicant.aura = member.aura == true
-    applicant.status = "Invited"
-    applicant.inviteSentAt = time()
-    applicant.inviteReminderSent = false
-    applicant.needsReview = member.role == "UNKNOWN"
-    applicant.updatedAt = time()
+    self:PrepareRebuildApplicant(member, "Invited")
     self:Print((isManual and "Manual" or "Automatic") .. " reinvite sent to " .. member.name .. ".")
     rebuild.index = rebuild.index + 1
     rebuild.phase = "inviting"
@@ -495,8 +512,12 @@ function MSR:UpdateRebuild()
             self.runtime.rebuild = nil
             self.char.session.rebuildRecovery = { active = false }
             self.char.session.needsRebuild = false
-            self:Print("All players returned. Optimizing raid groups.")
-            if GetNumRaidMembers and GetNumRaidMembers() > 0 then self:OptimizeGroups() end
+            self.runtime.groupOptimization = nil
+            if self:IsAutomaticGroupAssignmentEnabled() then
+                self:Print("All players returned. Continuing queued automatic group assignments.")
+            else
+                self:Print("All players returned. Use Optimize groups to arrange the rebuilt raid.")
+            end
         elseif now >= rebuild.deadline then
             local missing = rebuild.expectedTotal - #roster
             self.runtime.rebuild = nil

@@ -37,7 +37,7 @@ dofile("Manastorm.lua")
 dofile("Rebuild.lua")
 
 local MSR = ManastormRecruiter
-assertEqual(MSR.VERSION, "0.6.20", "runtime version matches addon release")
+assertEqual(MSR.VERSION, "0.6.21", "runtime version matches addon release")
 MSR.db = {
     settings = {
         channel = "8",
@@ -248,6 +248,13 @@ MSR.runtime.automaticGroupAssignment = nil
 MSR.runtime.pendingInviteGroupAssignments = {}
 assertEqual(MSR:PlanAutomaticInviteGroupAssignment(invitee), true, "successful invite arms automatic assignment")
 assertEqual(MSR.runtime.pendingInviteGroupAssignments.invitee ~= nil, true, "invite waits in assignment queue")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.invitee ~= nil, true,
+    "invite assignment is persisted across reloads")
+MSR.runtime.pendingInviteGroupAssignments = {}
+assertEqual(MSR:RestoreAutomaticInviteGroupAssignments(true), true,
+    "reload restores a persisted invite assignment")
+assertEqual(MSR.runtime.pendingInviteGroupAssignments.invitee ~= nil, true,
+    "restored invite returns to the runtime queue")
 assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), false, "pending invite does not move before joining")
 assertEqual(automaticMoveCalls, 0, "no subgroup API call is sent before invite acceptance")
 table.insert(inviteRoster, {
@@ -274,11 +281,60 @@ assertEqual(MSR.runtime.automaticGroupAssignment.target, 2, "joined second Aura 
 monotonicNow = monotonicNow + 1
 assertEqual(MSR:UpdateAutomaticGroupAssignment(inviteRoster), true, "invite move is confirmed from updated roster")
 assertEqual(MSR.runtime.automaticGroupAssignment, nil, "confirmed invite assignment is cleared")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.invitee, nil,
+    "confirmed invite assignment is removed from persistent recovery")
+
+local fallbackRoster = {
+    { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
+    { key = "existing", name = "Existing", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS", aura = false },
+}
+MSR.char.session.applicants.existing = {
+    key = "existing", name = "Existing", role = "DPS", aura = false, status = "Joined",
+}
+local fallbackApplicant = {
+    key = "fallback", name = "Fallback", role = "HEAL", aura = true, status = "Joined",
+}
+MSR.char.session.applicants.fallback = fallbackApplicant
+MSR.BuildRoster = function() return fallbackRoster end
+GetNumRaidMembers = function() return #fallbackRoster end
+MSR.runtime.automaticGroupAssignment = nil
+MSR.runtime.pendingInviteGroupAssignments = {}
+MSR.runtime.automaticGroupKnownMembers = nil
+MSR.char.session.automaticInviteGroupAssignments = {}
+automaticMoveCalls = 0
+SetRaidSubgroup = function(index, target)
+    automaticMoveCalls = automaticMoveCalls + 1
+    fallbackRoster[index].subgroup = target
+    return true
+end
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fallbackRoster), false,
+    "first roster scan establishes a baseline without moving existing members")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.existing, nil,
+    "initial roster members are not re-armed as new joins")
+table.insert(fallbackRoster, {
+    key = "fallback", name = "Fallback", unit = "raid3", raidIndex = 3,
+    subgroup = 1, role = "HEAL", aura = true,
+})
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fallbackRoster), true,
+    "new raid-member fallback activates automatic assignment")
+assertEqual(automaticMoveCalls, 1,
+    "unplanned joined applicant is moved without another button click")
+assertEqual(MSR.runtime.automaticGroupAssignment.reason, "new raid member fallback",
+    "fallback assignment records the recovered join path")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.fallback ~= nil, true,
+    "fallback assignment stays persistent until roster confirmation")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fallbackRoster), true,
+    "fallback move is confirmed from the next roster state")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.fallback, nil,
+    "confirmed fallback assignment clears persistent recovery")
 MSR.BuildRoster = originalBuildRoster
 GetNumRaidMembers = originalGetNumRaidMembers
 IsRaidLeader = originalIsRaidLeader
 SetRaidSubgroup = originalSetRaidSubgroup
 MSR.char.session.applicants.invitee = nil
+MSR.char.session.applicants.fallback = nil
+MSR.char.session.applicants.existing = nil
 
 local queuedAssignment
 local originalQueueAutomaticGroupAssignment = MSR.QueueAutomaticGroupAssignment
@@ -299,10 +355,13 @@ MSR.QueueAutomaticGroupAssignment = originalQueueAutomaticGroupAssignment
 
 MSR.runtime.automaticGroupAssignment = { key = "old" }
 MSR.runtime.pendingInviteGroupAssignments = { old = { key = "old" } }
+MSR.char.session.automaticInviteGroupAssignments = { old = { key = "old" } }
 assertEqual(MSR:SetAutomaticGroupAssignmentEnabled(false), true, "automatic assignment setting can be disabled")
 assertEqual(MSR:IsAutomaticGroupAssignmentEnabled(), false, "automatic assignment reports disabled")
 assertEqual(MSR.runtime.automaticGroupAssignment, nil, "disabling clears an active automatic move")
 assertEqual(next(MSR.runtime.pendingInviteGroupAssignments), nil, "disabling clears waiting invite moves")
+assertEqual(next(MSR.char.session.automaticInviteGroupAssignments), nil,
+    "disabling clears persistent invite recovery")
 assertEqual(MSR:PlanAutomaticInviteGroupAssignment(editedApplicant), false, "disabled setting blocks invite planning")
 assertEqual(MSR:SetAutomaticGroupAssignmentEnabled(true), true, "automatic assignment setting can be enabled")
 assertEqual(MSR:IsAutomaticGroupAssignmentEnabled(), true, "automatic assignment reports enabled")
@@ -319,16 +378,6 @@ assertEqual(MSR:MarkPrimaryTank(partialRoster, "tank"), true, "primary Tank star
 assertEqual(markedUnit, "raid2", "primary Tank marker unit")
 assertEqual(markedIcon, 1, "primary Tank receives raid star")
 
-local mainTankAssignments = {}
-SetPartyAssignment = function(assignment, unit, name, exactMatch)
-    table.insert(mainTankAssignments, {
-        assignment = assignment,
-        unit = unit,
-        name = name,
-        exactMatch = exactMatch,
-    })
-    return true
-end
 local tankRoster = {
     { key = "tank1", name = "MainTank", unit = "raid1", raidIndex = 1, subgroup = 1, role = "TANK" },
     { key = "tank2", name = "OffTank", unit = "raid6", raidIndex = 6, subgroup = 2, role = "TANK" },
@@ -341,33 +390,15 @@ assertEqual(tankMarkerCalls[1].unit, "raid1", "first Tank is selected by group a
 assertEqual(tankMarkerCalls[1].icon, 1, "first Tank receives the star")
 assertEqual(tankMarkerCalls[2].unit, "raid6", "second Tank follows the first Tank")
 assertEqual(tankMarkerCalls[2].icon, 2, "second Tank receives the circle")
-assertEqual(MSR:AssignMainTanks(tankRoster), true, "verified group click promotes all configured Tanks")
-assertEqual(#mainTankAssignments, 2, "only Tank roles receive /mt")
-assertEqual(mainTankAssignments[1].assignment, "MAINTANK", "first Tank uses MAINTANK assignment")
-assertEqual(mainTankAssignments[1].unit, "raid1", "first Tank unit is forwarded")
-assertEqual(mainTankAssignments[2].unit, "raid6", "second Tank unit is forwarded")
-assertEqual(mainTankAssignments[2].exactMatch, true, "main-Tank assignment uses exact player matching")
-mainTankAssignments = {}
-local buildRosterForMarkers = MSR.BuildRoster
-MSR.BuildRoster = function() return tankRoster end
-tankMarkerCalls = {}
-assertEqual(MSR:AssignMainTank(tankRoster[1]), true, "MT button assigns its selected Tank directly")
-assertEqual(#mainTankAssignments, 1, "MT button performs one direct assignment")
-assertEqual(mainTankAssignments[1].name, "MainTank", "MT button forwards the selected Tank name")
-assertEqual(#tankMarkerCalls, 2, "MT button refreshes both Tank markers")
-assertEqual(tankMarkerCalls[1].icon, 1, "MT button keeps the first Tank on star")
-assertEqual(tankMarkerCalls[2].icon, 2, "MT button keeps the second Tank on circle")
-MSR.BuildRoster = buildRosterForMarkers
 
 tankMarkerCalls = {}
 MSR.runtime.automaticGroupAssignment = {
     key = "tank2", name = "OffTank", target = 2, reason = "role changed", attempts = 1,
 }
 assertEqual(MSR:UpdateAutomaticGroupAssignment(tankRoster), true,
-    "confirmed automatic assignment refreshes Tank markers")
-assertEqual(#tankMarkerCalls, 2, "automatic assignment marks both Tanks")
-assertEqual(tankMarkerCalls[1].icon, 1, "automatic assignment gives first Tank the star")
-assertEqual(tankMarkerCalls[2].icon, 2, "automatic assignment gives second Tank the circle")
+    "confirmed automatic assignment completes without protected marker calls")
+assertEqual(#tankMarkerCalls, 0,
+    "automatic roster callbacks leave protected Tank markers to a player click")
 
 local statuses = { player = "ready", raid2 = "notready", raid3 = "waiting" }
 GetReadyCheckStatus = function(unit) return statuses[unit] end
@@ -615,6 +646,84 @@ assertEqual(MSR:KickRosterMember(roster[1]), false, "self removal is blocked")
 MSR:RecordGroupChat("CHAT_MSG_RAID", "Ready?", "Alice-Realm")
 assertEqual(#MSR.runtime.groupChat, 1, "embedded chat history")
 assertEqual(MSR.runtime.groupChat[1].sender, "Alice", "chat sender normalization")
+
+local originalRebuildBuildRoster = MSR.BuildRoster
+local originalRebuildOptimizeGroups = MSR.OptimizeGroups
+local originalRebuildInviteUnit = InviteUnit
+local originalRebuildSetRaidSubgroup = SetRaidSubgroup
+local originalRebuildApplicants = MSR.char.session.applicants
+local originalRebuildPersistentAssignments = MSR.char.session.automaticInviteGroupAssignments
+local rebuildRoster = {
+    { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
+}
+local rebuildInvites, rebuildMoves, rebuildOptimizeCalls = 0, 0, 0
+MSR.BuildRoster = function(self)
+    self.runtime.roster = rebuildRoster
+    self.runtime.rosterByKey = {}
+    for _, member in ipairs(rebuildRoster) do self.runtime.rosterByKey[member.key] = member end
+    return rebuildRoster
+end
+GetNumRaidMembers = function() return #rebuildRoster end
+InviteUnit = function(name)
+    assertEqual(name, "RebuildAura", "rebuild invite uses the stored member name")
+    rebuildInvites = rebuildInvites + 1
+    return true
+end
+SetRaidSubgroup = function(index, target)
+    rebuildMoves = rebuildMoves + 1
+    rebuildRoster[index].subgroup = target
+    return true
+end
+MSR.OptimizeGroups = function() rebuildOptimizeCalls = rebuildOptimizeCalls + 1 return true end
+MSR.char.session.applicants = {}
+MSR.char.session.automaticInviteGroupAssignments = {}
+MSR.char.session.rebuildRecovery = { active = true, stage = "reinviting" }
+MSR.runtime.automaticGroupAssignment = nil
+MSR.runtime.pendingInviteGroupAssignments = {}
+MSR.runtime.automaticGroupKnownMembers = { leader = rebuildRoster[1] }
+MSR.runtime.rebuild = {
+    phase = "inviting",
+    snapshot = { { key = "rebuildaura", name = "RebuildAura", role = "HEAL", aura = true } },
+    index = 1,
+    expectedTotal = 2,
+}
+assertEqual(MSR:AttemptRebuildInvite(false), true, "rebuild sends the stored reinvite")
+assertEqual(rebuildInvites, 1, "rebuild sends exactly one reinvite")
+assertEqual(MSR.runtime.pendingInviteGroupAssignments.rebuildaura ~= nil, true,
+    "rebuild explicitly arms automatic assignment for its reinvite")
+table.insert(rebuildRoster, {
+    key = "rebuildaura", name = "RebuildAura", unit = "raid2", raidIndex = 2,
+    subgroup = 1, role = "HEAL", aura = true,
+})
+MSR.char.session.applicants.rebuildaura.status = "Joined"
+assertEqual(MSR:UpdateAutomaticGroupAssignment(rebuildRoster), false,
+    "rebuild keeps assignments queued while the returning roster is incomplete")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil,
+    "rebuild does not calculate a target from an incomplete returning roster")
+assertEqual(rebuildMoves, 0, "rebuild does not move a player before its state ends")
+MSR.runtime.rebuild.phase = "waiting-return"
+MSR.runtime.rebuild.deadline = GetTime() + 10
+MSR:UpdateRebuild()
+assertEqual(MSR.runtime.rebuild, nil, "complete returning roster ends the rebuild state")
+assertEqual(rebuildOptimizeCalls, 0,
+    "rebuild completion does not start a competing one-click optimization")
+assertEqual(MSR:UpdateAutomaticGroupAssignment(rebuildRoster), true,
+    "queued rebuild assignment starts after the rebuild state ends")
+assertEqual(rebuildMoves, 1, "returned rebuild member is moved automatically")
+assertEqual(MSR.runtime.automaticGroupAssignment.target, 2,
+    "returned second Aura targets the uncovered second group")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(rebuildRoster), true,
+    "rebuild assignment is confirmed from the updated roster")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil,
+    "confirmed rebuild assignment leaves no active move")
+MSR.BuildRoster = originalRebuildBuildRoster
+MSR.OptimizeGroups = originalRebuildOptimizeGroups
+InviteUnit = originalRebuildInviteUnit
+SetRaidSubgroup = originalRebuildSetRaidSubgroup
+MSR.char.session.applicants = originalRebuildApplicants
+MSR.char.session.automaticInviteGroupAssignments = originalRebuildPersistentAssignments
+GetNumRaidMembers = function() return 3 end
 
 MSR.runtime.rebuild = { phase = "inviting", snapshot = {}, index = 1 }
 assertEqual(MSR:AttemptRebuildInvite(false), true, "finished reinvites enter return wait")

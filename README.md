@@ -89,7 +89,11 @@ Changing your own Role or Aura under **Your slot** or directly in **Raid Groups*
 uses the same automatic, roster-confirmed assignment for your own raid member.
 The same confirmed automatic assignment is armed when Manastorm Recruiter sends
 an invite. It waits for acceptance, recalculates against the current raid roster,
-and then moves the joined player without another click.
+and then moves the joined player without another click. Waiting invite assignments
+are persisted across `/reload`, and a newly detected raid member with reviewed role
+data re-arms the same assignment as a fallback if the original invite event was
+missed. Loading an already existing raid only establishes the detection baseline;
+it does not reassign every member.
 The complete automatic assignment feature can be enabled or disabled under
 **Settings > Automation & Replies**. Disabling it also clears waiting moves.
 
@@ -102,17 +106,17 @@ manually without changing the listener state.
 `/msr groupstatus` prints the current assignment switch, raid permissions, API
 availability, waiting/active moves, and every member's calculated target group.
 
-The addon never calls `/mt` or `SetPartyAssignment` from automatic invite/group
-events, `OnUpdate`, or rebuild automation because Ascension blocks that protected
-operation without a player action. Once all subgroup moves are confirmed, click
-**Verify groups** once: that same click marks the primary Tank and promotes all
-configured Tanks with `/mt`, matching the original working workflow without an
-Enter confirmation. The normal **MT** button beside each Tank performs the same
-direct, click-triggered assignment for that individual player. It is not a secure
-child frame, so it does not protect or block resizing the main addon window.
-Whenever an automatic subgroup assignment is confirmed, Tank markers are also
-refreshed: the first Tank by group/raid order receives the star and the second
-Tank receives the circle. Clicking any **MT** button refreshes both markers too.
+The addon never calls `SetPartyAssignment` from addon Lua because Ascension blocks
+that protected operation. Once all subgroup moves are confirmed, click **Verify
+groups** to confirm the layout and refresh the raid markers. Promote each configured
+Tank with the **MT** button beside that player. Each MT control is a detached secure
+`/mt` macro button: the real player click performs the protected action, while the
+movable Mission Control window remains unprotected. MT assignment is available only
+out of combat.
+Automatic subgroup events never update raid markers because Ascension protects
+that operation outside a hardware click. Clicking **Verify groups** or any secure
+**MT** button refreshes the markers instead: the first Tank by group/raid order
+receives the star and the second Tank receives the circle.
 
 ## Raid Workflow
 
@@ -135,14 +139,14 @@ Group optimization is intentionally step-by-step because WoW confirms subgroup m
 
 Use **Rebuild raid** when players reach level 60:
 
-- After confirmation, removal, Manastorm exit, reinvites, and the final group optimization continue automatically.
+- After confirmation, removal, Manastorm exit, and reinvites continue automatically. Every rebuild reinvite is queued for automatic subgroup assignment; targets are calculated only after the rebuild roster has returned so incomplete groups cannot produce stale destinations.
 - If Ascension blocks a protected removal, exit, or invite call, the rebuild pauses and shows one local Continue action for that exact step.
 
 1. Confirm the rebuild and wait for the countdown.
 2. Remove the current raid members when prompted.
 3. Leave Manastorm when prompted.
 4. The addon reinvites eligible players and leaves level-60 players out.
-5. Recruit replacements and optimize the groups again.
+5. Returned players are assigned one by one without another click. Recruit replacements afterward; their accepted invites use the same automatic assignment path.
 
 The rebuild state is saved. After `/reload` or a client restart, the addon offers to resume or discard an unfinished rebuild. Failed protected actions remain available as retry buttons.
 
