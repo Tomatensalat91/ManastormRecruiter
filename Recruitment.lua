@@ -463,6 +463,23 @@ function MSR:ClearChatScan()
     self:RefreshUI()
 end
 
+function MSR:RemoveChatScanEntry(entryOrKey)
+    if not self.char or not self.char.session then return false end
+    local key = type(entryOrKey) == "table" and entryOrKey.key or entryOrKey
+    key = key and self:NormalizeName(key) or ""
+    if key == "" then return false end
+
+    local session = self.char.session
+    session.chatScanEntries = session.chatScanEntries or {}
+    session.chatScanOrder = session.chatScanOrder or {}
+    local removed = session.chatScanEntries[key] ~= nil
+    session.chatScanEntries[key] = nil
+    for index = #session.chatScanOrder, 1, -1 do
+        if session.chatScanOrder[index] == key then table.remove(session.chatScanOrder, index) end
+    end
+    return removed
+end
+
 function MSR:InviteChatScanEntry(entry)
     if not entry then return false end
     if not self:IsGroupLeader() then
@@ -507,7 +524,7 @@ function MSR:InviteChatScanEntry(entry)
         applicant.status = "Invited"
         applicant.inviteSentAt = time()
         applicant.inviteReminderSent = false
-        entry.invitedAt = time()
+        self:RemoveChatScanEntry(entry)
         self:PlanAutomaticInviteGroupAssignment(applicant)
         self:Print("Chat Scanner invite sent to " .. applicant.name .. ".")
     else

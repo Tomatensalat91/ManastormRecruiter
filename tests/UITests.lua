@@ -153,6 +153,11 @@ assertTrue(UI.applicantsPanel:IsShown(), "applicants page shows the waiting list
 assertTrue(UI.chatScannerPanel:IsShown(), "applicants page shows the public chat scanner")
 assertTrue(not UI.groupsPanel:IsShown(), "applicants page keeps raid groups separate")
 assertTrue(UI.waitingCountText, "waiting count is displayed as a passive badge")
+assertTrue(UI.rosterOverview:IsShown(), "large roster overview is visible on operational pages")
+assertTrue(UI.rosterOverviewCards.tank.icon.width == 36, "roster overview uses large role icons")
+assertTrue(UI.rosterOverviewCards.aura.icon.texture == "Interface\\AddOns\\ManastormRecruiter\\Assets\\AuraBonusXP.tga",
+    "roster overview uses the custom Aura icon")
+assertContains(UI.rosterOverviewCards.tank.needText:GetText(), "NEED", "roster overview shows missing slots")
 assertTrue(UI.joinedApplicantsTab == nil, "joined players are shown only on the raid groups page")
 assertTrue(UI.recruitToggleActionButton:IsShown(), "recruitment toggle shown")
 assertTrue(UI.recruitToggleActionButton.points[1][1] == "BOTTOMLEFT", "recruitment toggle has a fixed anchor")
@@ -337,6 +342,22 @@ assertContains(UI.groupCards[1].rows[1].nameText:GetText(), "Longplayername", "f
 assertContains(UI.groupCards[1].rows[1].readyText:GetText(), "R", "ready result shown in player row")
 assertTrue(UI.groupCards[1].rows[1].roleButton.roleState == "TANK", "raid row uses a Tank icon")
 assertTrue(UI.groupCards[1].rows[1].auraButton.auraState == "yes", "raid row uses an Aura icon")
+assertTrue(UI.groupCards[1].auraIcon.texture == "Interface\\AddOns\\ManastormRecruiter\\Assets\\AuraBonusXP.tga",
+    "raid group Aura status uses the custom Aura icon")
+assertTrue(UI.groupCards[1].rows[1].readyState == "ready", "ready player colors the complete row green")
+assertTrue(UI.groupCards[1].rows[1].backdropColor[2] > UI.groupCards[1].rows[1].backdropColor[1],
+    "ready row uses a green-dominant background")
+ManastormRecruiter.runtime.readyCheck.members.leader.status = "notready"
+UI:RefreshGroups()
+assertTrue(UI.groupCards[1].rows[1].readyState == "notready", "not-ready player colors the complete row red")
+assertTrue(UI.groupCards[1].rows[1].backdropColor[1] > UI.groupCards[1].rows[1].backdropColor[2],
+    "not-ready row uses a red-dominant background")
+ManastormRecruiter.runtime.readyCheck.members.leader.status = "waiting"
+UI:RefreshGroups()
+assertTrue(UI.groupCards[1].rows[1].readyState == "waiting", "waiting player colors the complete row yellow")
+ManastormRecruiter.runtime.readyCheck = nil
+UI:RefreshGroups()
+assertTrue(UI.groupCards[1].rows[1].readyState == "neutral", "clearing Ready Check restores the neutral row")
 assertTrue(UI.groupCards[1].rows[1].roleButton.width == 30
     and UI.groupCards[1].rows[1].roleButton.height == 30,
     "raid role control is square")
@@ -411,7 +432,7 @@ UI:Refresh()
 assertTrue(UI.phase == "raid", "group automatically activates build-raid phase")
 assertTrue(UI.frame:GetHeight() == 680, "mission-control workspace stays stable while grouped")
 assertTrue(UI.optimizeButton:IsShown(), "optimize action shown while building raid")
-assertTrue(UI.recruitmentPreviewLabel:IsShown(), "recruitment preview remains visible across operational pages")
+assertTrue(UI.rosterOverview:IsShown(), "large roster overview remains visible across operational pages")
 assertTrue(UI.postRosterButton:IsShown(), "post roster remains visible outside Manastorm while grouped")
 assertContains(UI.levelStatusButton:GetText(), "Post & Leave", "Level 59 leave button label")
 assertTrue(UI.levelStatusButton:IsEnabled(), "Level 59 info button enabled")

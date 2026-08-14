@@ -4,7 +4,7 @@ local AUTO_GROUP_CONFIRM_DELAY = 0.75
 local AUTO_GROUP_MAX_ATTEMPTS = 3
 local AUTO_GROUP_INVITE_TTL = 180
 
-MSR.AUTOMATIC_GROUP_ASSIGNMENT_VERSION = 3
+MSR.AUTOMATIC_GROUP_ASSIGNMENT_VERSION = 4
 
 function MSR:IsAutomaticGroupAssignmentEnabled()
     return not self.db or not self.db.settings or self.db.settings.automaticGroupAssignment ~= false
@@ -100,6 +100,18 @@ function MSR:KickRosterMember(member)
     if not ok or result == false then
         self:PrivateWarning("The removal request for " .. tostring(member.name) .. " failed.")
         return false
+    end
+    if tonumber(member.level) == 59 then
+        local message = self:BuildConfiguredMessage("level59KickWhisper", {
+            player = member.name,
+            level = member.level,
+        })
+        if message ~= "" and type(SendChatMessage) == "function" then
+            local whisperOk, whisperResult = pcall(SendChatMessage, message, "WHISPER", nil, member.name)
+            if not whisperOk or whisperResult == false then
+                self:LocalWarning("The Level 59 farewell whisper to " .. tostring(member.name) .. " could not be sent.")
+            end
+        end
     end
     self:Print("Removal requested for " .. tostring(member.name) .. ".")
     return true
@@ -474,7 +486,10 @@ function MSR:BuildPartialDesiredGroups(roster)
     if playerCount == 0 then return nil, "There are no raid members to optimize." end
     if playerCount > 15 then return nil, "Manastorm groups support at most 15 players." end
 
-    local activeGroups = math.min(3, math.max(1, math.ceil(playerCount / 5)))
+    -- Plan against all three final subgroups even while the raid is incomplete.
+    -- Compacting solely by player count can fill Groups 1 and 2 with DPS before
+    -- their configured Tank/Healer slots arrive.
+    local plannedGroups = 3
     local assignments = { [1] = {}, [2] = {}, [3] = {} }
     local roleCounts = {
         [1] = { TANK = 0, HEAL = 0, DPS = 0, UNKNOWN = 0 },
@@ -492,12 +507,27 @@ function MSR:BuildPartialDesiredGroups(roster)
         used[index] = true
     end
 
+    local function RemoveMember(group, index)
+        local member = roster[index]
+        local role = member.role or "UNKNOWN"
+        table.remove(assignments[group])
+        roleCounts[group][role] = math.max(0, (roleCounts[group][role] or 0) - 1)
+        used[index] = nil
+    end
+
+    local function HasRoleCapacity(group, role)
+        local limit = configured[group] and configured[group][role]
+        return limit ~= nil
+            and (roleCounts[group][role] or 0) < limit
+            and #assignments[group] < 5
+    end
+
     local auraPlayers = 0
     for _, member in ipairs(roster) do
         if member.aura == true then auraPlayers = auraPlayers + 1 end
     end
     local auraGroups = math.min(
-        activeGroups,
+        plannedGroups,
         tonumber(self.db.settings.slots.aura) or 0,
         auraPlayers
     )
@@ -511,37 +541,41 @@ function MSR:BuildPartialDesiredGroups(roster)
         end
     end
 
-    -- Seed as many active groups as possible with one Aura player. Prefer an
-    -- Aura role that also fits the configured final composition for that group.
+    -- Seed the configured groups with Aura players without consuming a slot
+    -- reserved for another role. Backtracking avoids a locally valid Aura pick
+    -- that would leave a later group without a compatible Aura role.
+    local auraTargets = {}
     for group = 1, auraGroups do
         local alreadyHasAura = false
         for _, assigned in ipairs(assignments[group]) do
             if assigned.aura == true then alreadyHasAura = true break end
         end
-        if not alreadyHasAura then
-            local selected
-            for index, member in ipairs(roster) do
-                if not used[index] and member.aura == true then
-                    local role = member.role or "UNKNOWN"
-                    if configured[group][role] and configured[group][role] > 0 then
-                        selected = index
-                        break
-                    end
-                    selected = selected or index
-                end
-            end
-            if selected then AddMember(group, selected) end
-        end
+        if not alreadyHasAura then table.insert(auraTargets, group) end
     end
+
+    local function AssignAura(targetIndex)
+        if targetIndex > #auraTargets then return true end
+        local group = auraTargets[targetIndex]
+        for index, member in ipairs(roster) do
+            local role = member.role or "UNKNOWN"
+            if not used[index] and member.aura == true and HasRoleCapacity(group, role) then
+                AddMember(group, index)
+                if AssignAura(targetIndex + 1) then return true end
+                RemoveMember(group, index)
+            end
+        end
+        return false
+    end
+    AssignAura(1)
 
     local function FindBestGroup(role)
         local bestGroup
         local bestConfigured = -1
         local bestRoleCount
         local bestTotal
-        for group = 1, activeGroups do
+        for group = 1, plannedGroups do
             local total = #assignments[group]
-            if total < 5 then
+            if HasRoleCapacity(group, role) then
                 local configuredNeed = 0
                 if configured[group][role] then
                     configuredNeed = math.max(0, configured[group][role] - (roleCounts[group][role] or 0))
@@ -561,11 +595,20 @@ function MSR:BuildPartialDesiredGroups(roster)
         return bestGroup
     end
 
+    local function FindUnknownGroup()
+        -- An unreviewed role cannot be matched to a configured slot yet. Keep
+        -- Groups 1 and 2 untouched for as long as Group 3 has physical room.
+        for group = plannedGroups, 1, -1 do
+            if #assignments[group] < 5 then return group end
+        end
+        return nil
+    end
+
     local roles = { "TANK", "HEAL", "DPS", "UNKNOWN" }
     for _, role in ipairs(roles) do
         for index, member in ipairs(roster) do
             if not used[index] and (member.role or "UNKNOWN") == role then
-                local group = FindBestGroup(role)
+                local group = role == "UNKNOWN" and FindUnknownGroup() or FindBestGroup(role)
                 if not group then return nil, member.name .. " has no available subgroup slot." end
                 AddMember(group, index)
             end
@@ -814,23 +857,28 @@ function MSR:GetAutomaticGroupTarget(memberKey, roster)
     -- separate AutoGroup test addon on Ascension.
     if member.aura == true then
         local requiredGroups = math.min(3, tonumber(self.db.settings.slots.aura) or 0)
+        local configured = self:GetRoleCapacities()
+        local memberRole = member.role or "UNKNOWN"
         local auraCounts = {}
-        local groupSizes = {}
+        local roleCounts = {}
         for group = 1, requiredGroups do
             auraCounts[group] = 0
-            groupSizes[group] = 0
+            roleCounts[group] = 0
         end
         for _, candidate in ipairs(roster) do
             local group = tonumber(candidate.subgroup) or 1
             if group >= 1 and group <= requiredGroups and candidate.key ~= memberKey then
-                groupSizes[group] = groupSizes[group] + 1
                 if candidate.aura == true then auraCounts[group] = auraCounts[group] + 1 end
+                if (candidate.role or "UNKNOWN") == memberRole then
+                    roleCounts[group] = roleCounts[group] + 1
+                end
             end
         end
         for group = 1, requiredGroups do
-            -- A full uncovered group is still a valid target because the
-            -- execution path can use SwapRaidSubgroup instead of a direct move.
-            if auraCounts[group] == 0 then return group end
+            -- Aura coverage may use a buffered exchange for a physically full
+            -- group, but it must never consume a slot reserved for another role.
+            local roleLimit = configured[group] and configured[group][memberRole] or 0
+            if auraCounts[group] == 0 and roleCounts[group] < roleLimit then return group end
         end
     end
 
@@ -1103,6 +1151,19 @@ function MSR:FindAutomaticGroupSwapCandidate(member, target, roster)
     return misplacedFallback or sameRoleNonAura or nonAuraFallback
 end
 
+function MSR:FindAutomaticGroupBuffer(roster, source, target)
+    local groupCounts = {}
+    for group = 4, 8 do groupCounts[group] = 0 end
+    for _, member in ipairs(roster or {}) do
+        local group = tonumber(member.subgroup) or 1
+        if groupCounts[group] ~= nil then groupCounts[group] = groupCounts[group] + 1 end
+    end
+    for group = 4, 8 do
+        if group ~= source and group ~= target and groupCounts[group] < 5 then return group end
+    end
+    return nil
+end
+
 function MSR:UpdateAutomaticGroupAssignment(roster)
     if not self:IsAutomaticGroupAssignmentEnabled() then
         if self.runtime then
@@ -1127,9 +1188,11 @@ function MSR:UpdateAutomaticGroupAssignment(roster)
     end
 
     local member
+    local exchangeMember
     local targetCount = 0
     for _, candidate in ipairs(roster) do
         if candidate.key == pending.key then member = candidate end
+        if pending.exchange and candidate.key == pending.exchange.key then exchangeMember = candidate end
         if tonumber(candidate.subgroup) == pending.target then targetCount = targetCount + 1 end
     end
     if not member then
@@ -1138,7 +1201,40 @@ function MSR:UpdateAutomaticGroupAssignment(roster)
         self:PrivateWarning("Automatic group assignment cancelled because " .. tostring(pending.name) .. " left the raid.")
         return false
     end
-    if tonumber(member.subgroup) == pending.target then
+    if pending.exchange then
+        local exchange = pending.exchange
+        if not exchangeMember then
+            self.runtime.automaticGroupAssignment = nil
+            self:ClearAutomaticInviteGroupAssignment(pending.key)
+            self:PrivateWarning("Automatic group exchange cancelled because " .. tostring(exchange.name) .. " left the raid.")
+            return false
+        end
+
+        local memberGroup = tonumber(member.subgroup) or 1
+        local exchangeGroup = tonumber(exchangeMember.subgroup) or 1
+        if exchange.stage == "buffer" and exchangeGroup == exchange.buffer then
+            exchange.stage = "mover"
+            pending.attempts = 0
+            pending.nextAttemptAt = 0
+            pending.notice = nil
+        end
+        if exchange.stage == "mover" and memberGroup == pending.target then
+            exchange.stage = "restore"
+            pending.attempts = 0
+            pending.nextAttemptAt = 0
+            pending.notice = nil
+        end
+        if exchange.stage == "restore" and memberGroup == pending.target and exchangeGroup == exchange.source then
+            self.runtime.automaticGroupAssignment = nil
+            self:ClearAutomaticInviteGroupAssignment(pending.key)
+            self:Print(string.format(
+                "Automatic group exchange confirmed: %s is now in Group %d and %s is now in Group %d.",
+                member.name, pending.target, exchangeMember.name, exchange.source
+            ))
+            self:RefreshUI()
+            return true
+        end
+    elseif tonumber(member.subgroup) == pending.target then
         self.runtime.automaticGroupAssignment = nil
         self:ClearAutomaticInviteGroupAssignment(pending.key)
         self:Print(string.format("Automatic group assignment confirmed: %s is now in Group %d.", member.name, pending.target))
@@ -1175,7 +1271,37 @@ function MSR:UpdateAutomaticGroupAssignment(roster)
     local from = tonumber(member.subgroup) or 1
     local ok, result
     local action = "move"
-    if targetCount < 5 then
+    local actionMember = member
+    local actionTarget = pending.target
+    if pending.exchange then
+        local exchange = pending.exchange
+        if exchange.stage == "buffer" then
+            actionMember = exchangeMember
+            actionTarget = exchange.buffer
+            action = "exchange buffer move"
+        elseif exchange.stage == "mover" then
+            if targetCount >= 5 then
+                pending.attempts = pending.attempts - 1
+                pending.nextAttemptAt = now + 1
+                if pending.notice ~= "exchange-target-full" then
+                    pending.notice = "exchange-target-full"
+                    self:PrivateWarning(string.format("Group %d did not become free yet; the exchange for %s is waiting.", pending.target, member.name))
+                end
+                return false
+            end
+            action = "exchange target move"
+        elseif exchange.stage == "restore" then
+            actionMember = exchangeMember
+            actionTarget = exchange.source
+            action = "exchange restore move"
+        end
+        if type(SetRaidSubgroup) ~= "function" then
+            self.runtime.automaticGroupAssignment = nil
+            self:PrivateWarning("SetRaidSubgroup is unavailable in this client.")
+            return false
+        end
+        ok, result = pcall(SetRaidSubgroup, actionMember.raidIndex, actionTarget)
+    elseif targetCount < 5 then
         if type(SetRaidSubgroup) ~= "function" then
             self.runtime.automaticGroupAssignment = nil
             self:PrivateWarning("SetRaidSubgroup is unavailable in this client.")
@@ -1184,28 +1310,43 @@ function MSR:UpdateAutomaticGroupAssignment(roster)
         ok, result = pcall(SetRaidSubgroup, member.raidIndex, pending.target)
     else
         local swap = self:FindAutomaticGroupSwapCandidate(member, pending.target, roster)
-        if not swap or type(SwapRaidSubgroup) ~= "function" then
+        local buffer = self:FindAutomaticGroupBuffer(roster, from, pending.target)
+        if not swap or not buffer or type(SetRaidSubgroup) ~= "function" then
             pending.attempts = pending.attempts - 1
             pending.nextAttemptAt = now + 1
             if pending.notice ~= "full" then
                 pending.notice = "full"
-                self:PrivateWarning(string.format("Group %d is full and no safe planned swap is available for %s.", pending.target, member.name))
+                self:PrivateWarning(string.format("Group %d is full and no safe buffered exchange is available for %s.", pending.target, member.name))
             end
             return false
         end
-        action = "swap with " .. tostring(swap.name)
-        ok, result = pcall(SwapRaidSubgroup, member.raidIndex, swap.raidIndex)
+        pending.exchange = {
+            key = swap.key,
+            name = swap.name,
+            source = from,
+            target = pending.target,
+            buffer = buffer,
+            stage = "buffer",
+        }
+        exchangeMember = swap
+        actionMember = swap
+        actionTarget = buffer
+        action = "exchange buffer move"
+        ok, result = pcall(SetRaidSubgroup, actionMember.raidIndex, actionTarget)
     end
 
     if not ok or result == false then
         self.runtime.automaticGroupAssignment = nil
         self:ClearAutomaticInviteGroupAssignment(pending.key)
-        self:PrivateWarning("Ascension rejected the automatic subgroup " .. action .. " for " .. tostring(member.name) .. ".")
+        self:PrivateWarning("Ascension rejected the automatic subgroup " .. action .. " for " .. tostring(actionMember.name) .. ".")
         return false
     end
     pending.notice = nil
     pending.nextAttemptAt = now + AUTO_GROUP_CONFIRM_DELAY
-    self:Print(string.format("Automatic group %s sent: %s, Group %d -> Group %d (attempt %d).", action, member.name, from, pending.target, pending.attempts))
+    self:Print(string.format(
+        "Automatic group %s sent: %s, Group %d -> Group %d (attempt %d).",
+        action, actionMember.name, tonumber(actionMember.subgroup) or 1, actionTarget, pending.attempts
+    ))
     return true
 end
 function MSR:GetGroupOptimizationRemaining(roster, optimization)

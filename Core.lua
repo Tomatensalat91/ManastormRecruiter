@@ -1,7 +1,7 @@
 ManastormRecruiter = ManastormRecruiter or {}
 local MSR = ManastormRecruiter
 
-MSR.VERSION = "0.6.21"
+MSR.VERSION = "0.6.22"
 MSR.PARSER_VERSION = 6
 MSR.PREFIX = "|cff65d5ff[MSR]|r "
 MSR.ROLE_ORDER = { "TANK", "HEAL", "DPS" }
@@ -34,6 +34,7 @@ local MESSAGE_DEFAULTS = {
     rebuildAnnouncement = "Rebuilding the raid now. Reinvites will follow shortly.",
     level60Warning = "WARNING: {player} has reached level 60. The raid must be rebuilt.",
     level59Warning = "WARNING: {player} has reached level 59 and is close to the Manastorm cap.",
+    level59KickWhisper = "Thanks for joining us! You were removed because you are level 59 and close to the Manastorm level cap. If you are interested in the addon, you can find ManastormRecruiter on GitHub.",
     level60StatusPost = "Thanks, everyone! I have reached level 60. Raid lead will pass automatically when I leave. The current roster is: Tank {tank}/{tankMax}, Heal {heal}/{healMax}, Aura {aura}/{auraMax}. Aura players: {auraPlayers}.",
     level59StatusPost = "Thanks, everyone! I am level 59 and close to level 60, so I am leaving the raid. Raid lead will pass automatically when I leave. The current roster is: Tank {tank}/{tankMax}, Heal {heal}/{healMax}, Aura {aura}/{auraMax}. Aura players: {auraPlayers}.",
     belowLevel59StatusPost = "Thanks, everyone! I am leaving the raid at level {level}. Raid lead will pass automatically when I leave. The current roster is: Tank {tank}/{tankMax}, Heal {heal}/{healMax}, Aura {aura}/{auraMax}. Aura players: {auraPlayers}.",
@@ -465,6 +466,7 @@ end
 function MSR:HandleManastormUpdate()
     local inManastorm = self:IsInManastorm()
     if inManastorm and not self.runtime.wasInManastorm then
+        self.runtime.readyCheck = nil
         WipeTable(self.char.session.level59Alerted)
         WipeTable(self.char.session.level60Alerted)
         self.char.session.needsRebuild = false

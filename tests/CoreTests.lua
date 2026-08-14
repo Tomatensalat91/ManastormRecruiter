@@ -37,7 +37,7 @@ dofile("Manastorm.lua")
 dofile("Rebuild.lua")
 
 local MSR = ManastormRecruiter
-assertEqual(MSR.VERSION, "0.6.21", "runtime version matches addon release")
+assertEqual(MSR.VERSION, "0.6.22", "runtime version matches addon release")
 MSR.db = {
     settings = {
         channel = "8",
@@ -154,6 +154,46 @@ assertEqual(partialGroups[1][1].key, "tank", "primary Tank is first in desired G
 local partialPlan = MSR:BuildGroupOptimizationPlan(partialRoster)
 assertEqual(partialPlan.primaryTankKey, "tank", "group optimization stores primary Tank")
 
+local roleReservedRoster = {
+    { key = "tank1", name = "TankOne", role = "TANK", aura = false },
+    { key = "tank2", name = "TankTwo", role = "TANK", aura = false },
+}
+for index = 1, 10 do
+    table.insert(roleReservedRoster, {
+        key = "reserved-dps-" .. index,
+        name = "ReservedDps" .. index,
+        role = "DPS",
+        aura = false,
+    })
+end
+local roleReservedGroups = MSR:BuildPartialDesiredGroups(roleReservedRoster)
+for group = 1, 2 do
+    local tanks = 0
+    local damage = 0
+    for _, member in ipairs(roleReservedGroups[group]) do
+        if member.role == "TANK" then tanks = tanks + 1 end
+        if member.role == "DPS" then damage = damage + 1 end
+    end
+    assertEqual(#roleReservedGroups[group], 4, "partial Group " .. group .. " keeps its Healer slot open")
+    assertEqual(tanks, 1, "partial Group " .. group .. " reserves the configured Tank placement")
+    assertEqual(damage, 3, "partial Group " .. group .. " does not overfill its DPS placements")
+end
+assertEqual(#roleReservedGroups[3], 4, "overflow DPS are assigned to Group 3 before reserved slots are consumed")
+
+local auraRoleReservedRoster = {
+    { key = "g1-tank", name = "G1Tank", subgroup = 1, role = "TANK", aura = false },
+    { key = "g1-aura", name = "G1Aura", subgroup = 1, role = "DPS", aura = true },
+    { key = "g1-dps2", name = "G1DpsTwo", subgroup = 1, role = "DPS", aura = false },
+    { key = "g1-dps3", name = "G1DpsThree", subgroup = 1, role = "DPS", aura = false },
+    { key = "g2-tank", name = "G2Tank", subgroup = 2, role = "TANK", aura = false },
+    { key = "g2-dps1", name = "G2DpsOne", subgroup = 2, role = "DPS", aura = false },
+    { key = "g2-dps2", name = "G2DpsTwo", subgroup = 2, role = "DPS", aura = false },
+    { key = "g2-dps3", name = "G2DpsThree", subgroup = 2, role = "DPS", aura = false },
+    { key = "late-aura", name = "LateAura", subgroup = 3, role = "DPS", aura = true },
+}
+assertEqual(MSR:GetAutomaticGroupTarget("late-aura", auraRoleReservedRoster), 3,
+    "Aura priority does not consume Group 2's reserved Healer slot with a fourth DPS")
+
 local twoAuraRoster = {
     { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
     { key = "kard", name = "Kard", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS", aura = true },
@@ -191,43 +231,49 @@ SetRaidSubgroup = originalSetRaidSubgroup
 local fullTargetRoster = {
     { key = "mover", name = "AuraMover", unit = "raid1", raidIndex = 1, subgroup = 1, role = "HEAL", aura = true },
     { key = "aura1", name = "AuraOne", unit = "raid2", raidIndex = 2, subgroup = 1, role = "DPS", aura = true },
-    { key = "target1", name = "TargetOne", unit = "raid3", raidIndex = 3, subgroup = 2, role = "HEAL", aura = false },
+    { key = "target1", name = "TargetOne", unit = "raid3", raidIndex = 3, subgroup = 2, role = "TANK", aura = false },
     { key = "target2", name = "TargetTwo", unit = "raid4", raidIndex = 4, subgroup = 2, role = "DPS", aura = false },
     { key = "target3", name = "TargetThree", unit = "raid5", raidIndex = 5, subgroup = 2, role = "DPS", aura = false },
     { key = "target4", name = "TargetFour", unit = "raid6", raidIndex = 6, subgroup = 2, role = "DPS", aura = false },
     { key = "target5", name = "TargetFive", unit = "raid7", raidIndex = 7, subgroup = 2, role = "DPS", aura = false },
 }
-local originalSwapRaidSubgroup = SwapRaidSubgroup
-local swapCalls = 0
+local exchangeMoves = {}
 MSR.BuildRoster = function() return fullTargetRoster end
 GetNumRaidMembers = function() return #fullTargetRoster end
 IsRaidLeader = function() return true end
-SwapRaidSubgroup = function(first, second)
-    swapCalls = swapCalls + 1
-    local group = fullTargetRoster[first].subgroup
-    fullTargetRoster[first].subgroup = fullTargetRoster[second].subgroup
-    fullTargetRoster[second].subgroup = group
+SetRaidSubgroup = function(index, target)
+    table.insert(exchangeMoves, { index = index, target = target })
+    fullTargetRoster[index].subgroup = target
     return true
 end
 MSR.runtime.automaticGroupAssignment = nil
 assertEqual(MSR:GetAutomaticGroupTarget("mover", fullTargetRoster), 2,
     "Aura mover targets uncovered full Group 2")
 assertEqual(MSR:QueueAutomaticGroupAssignment("mover", "Aura changed"), true,
-    "full target group uses automatic swap path")
-assertEqual(swapCalls, 1, "SwapRaidSubgroup is called once for a full target group")
-local swappedOut = 0
-for index = 3, 7 do
-    if fullTargetRoster[index].subgroup == 1 then swappedOut = swappedOut + 1 end
-end
-assertEqual(swappedOut, 1, "one full-target member is exchanged into the source group")
+    "full target group starts a buffered exchange")
+assertEqual(#exchangeMoves, 1, "buffered exchange starts with one subgroup move")
+assertEqual(exchangeMoves[1].target, 4, "full-target member moves to a temporary raid group")
+assertEqual(fullTargetRoster[1].subgroup, 1, "Aura mover waits until the target slot is confirmed free")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fullTargetRoster), true,
+    "confirmed buffer move advances the Aura mover into its target")
+assertEqual(#exchangeMoves, 2, "second exchange step moves the requested player")
 assertEqual(fullTargetRoster[1].subgroup, 2, "Aura mover enters the previously full target group")
 monotonicNow = monotonicNow + 1
 assertEqual(MSR:UpdateAutomaticGroupAssignment(fullTargetRoster), true,
-    "full-group swap is confirmed from roster")
+    "confirmed target move restores the displaced player")
+assertEqual(#exchangeMoves, 3, "third exchange step restores the displaced player")
+assertEqual(fullTargetRoster[exchangeMoves[1].index].subgroup, 1,
+    "displaced player returns to the mover's source group")
+monotonicNow = monotonicNow + 1
+assertEqual(MSR:UpdateAutomaticGroupAssignment(fullTargetRoster), true,
+    "both sides of the buffered exchange are confirmed")
+assertEqual(MSR.runtime.automaticGroupAssignment, nil,
+    "confirmed buffered exchange clears the active assignment")
 MSR.BuildRoster = originalBuildRoster
 GetNumRaidMembers = originalGetNumRaidMembers
 IsRaidLeader = originalIsRaidLeader
-SwapRaidSubgroup = originalSwapRaidSubgroup
+SetRaidSubgroup = originalSetRaidSubgroup
 
 local inviteRoster = {
     { key = "leader", name = "Leader", unit = "raid1", raidIndex = 1, subgroup = 1, role = "DPS", aura = true },
@@ -413,6 +459,8 @@ MSR:HandleReadyCheckEvent("READY_CHECK_CONFIRM", "raid3", true)
 assertEqual(MSR.runtime.readyCheck.ready, 2, "live ready confirmation")
 assertEqual(MSR:GetReadyCheckMemberStatus(roster[2]), "notready", "per-player not-ready status")
 assertEqual(MSR:GetReadyCheckMemberStatus(roster[3]), "ready", "per-player ready status")
+MSR.runtime.readyCheck = MSR:CreateReadyCheckState(roster, "Leader")
+assertEqual(MSR:GetReadyCheckMemberStatus(roster[2]), "waiting", "new Ready Check resets the previous player result")
 
 MSR.char.session.applicants = {
     alice = { key = "alice", name = "Alice", status = "Joined", role = "HEAL", aura = true },
@@ -429,6 +477,7 @@ local originalBuildRoster = MSR.BuildRoster
 MSR.BuildRoster = function() return roster end
 assertEqual(MSR:StartManastormLevelOne(), true, "Manastorm start request")
 MSR.BuildRoster = originalBuildRoster
+assertEqual(MSR:GetReadyCheckMemberStatus(roster[2]), nil, "starting Manastorm clears Ready Check row colors")
 assertEqual(MSR.char.session.listening, false, "listening stops when Manastorm starts")
 assertEqual(MSR.db.settings.autoPost, true, "Manastorm start preserves enabled Auto-Post setting")
 assertEqual(MSR.char.session.applicants.waiter, nil, "waiting applicant cleared on Manastorm start")
@@ -543,6 +592,7 @@ MSR.IsGroupLeader = function() return true end
 assertEqual(MSR:InviteChatScanEntry(MSR:GetChatScanEntries()[1]), true, "scanner candidate can be invited without an Aura declaration")
 assertEqual(scannerInviteName, "ScanGuy", "scanner invites the detected player")
 assertEqual(MSR.char.session.applicants.scanguy.status, "Invited", "scanner invite enters applicant workflow")
+assertEqual(#MSR:GetChatScanEntries(), 0, "invited player is removed from the chat scanner")
 MSR.IsGroupLeader = originalIsGroupLeader
 
 local originalIsInManastorm = MSR.IsInManastorm
@@ -564,8 +614,9 @@ MSR:HandleWhisper("Any free slot?", "Lateplayer")
 assertEqual(lateReplyTarget, "Lateplayer", "later whispers still receive the Manastorm reply")
 assertEqual(lateReplyCount, 2, "every later Manastorm whisper is answered")
 MSR.IsInManastorm = originalIsInManastorm
-SendChatMessage = function(message, channel)
-    sentMessage, sentChannel = message, channel
+local sentTarget
+SendChatMessage = function(message, channel, _, target)
+    sentMessage, sentChannel, sentTarget = message, channel, target
     return true
 end
 
@@ -641,6 +692,10 @@ assertContains(sentMessage, "Alice", "Level 59 raid warning player")
 UninviteUnit = function(name) removedName = name return true end
 assertEqual(MSR:KickRosterMember(roster[2]), true, "single-player removal")
 assertEqual(removedName, "Alice", "selected player removal target")
+assertEqual(sentChannel, "WHISPER", "Level 59 removal sends a whisper")
+assertEqual(sentTarget, "Alice", "Level 59 removal whisper targets the removed player")
+assertContains(sentMessage, "because you are level 59", "Level 59 removal whisper explains the reason")
+assertContains(sentMessage, "ManastormRecruiter on GitHub", "Level 59 removal whisper names the addon on GitHub")
 assertEqual(MSR:KickRosterMember(roster[1]), false, "self removal is blocked")
 
 MSR:RecordGroupChat("CHAT_MSG_RAID", "Ready?", "Alice-Realm")

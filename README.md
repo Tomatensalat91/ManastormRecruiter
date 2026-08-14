@@ -131,6 +131,11 @@ The intended 15-player arrangement is:
 - Group 3: 1 Healer, 4 DPS
 - At least one Aura player in each group
 
+Automatic assignment plans against this final role layout even while the raid is
+still incomplete. In particular, Groups 1 and 2 keep their missing Tank or Healer
+positions open; additional DPS are placed in Group 3 instead of occupying those
+reserved role slots.
+
 Group optimization is intentionally step-by-step because WoW confirms subgroup moves asynchronously. The button must therefore be clicked several times: click **Optimize groups**, wait for the move, then keep clicking **Verify / next** until the addon reports that all moves are complete. Groups 4-8 may be used temporarily as a move buffer.
 
 ### Manastorm and Rebuild

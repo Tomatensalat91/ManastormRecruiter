@@ -60,6 +60,7 @@ local MESSAGE_FIELDS = {
     { key = "rebuildAnnouncement", label = "Rebuild raid warning" },
     { key = "level60Warning", label = "Level 60 raid warning" },
     { key = "level59Warning", label = "Level 59 raid warning" },
+    { key = "level59KickWhisper", label = "Level 59 kick whisper" },
     { key = "level60StatusPost", label = "Post & Leave - Level 60" },
     { key = "level59StatusPost", label = "Post & Leave - Level 59" },
     { key = "belowLevel59StatusPost", label = "Post & Leave - Below Level 59" },
@@ -72,7 +73,7 @@ local MESSAGE_SECTIONS = {
         y = -90,
         keys = {
             "recruitment", "reservationSuffix", "invalidApplicationReply", "missingLevelReply", "acceptedApplicationReply",
-            "inManastormReply", "raidFullReply", "roleFullReply", "auraRequiredReply",
+            "inManastormReply", "raidFullReply", "roleFullReply", "auraRequiredReply", "level59KickWhisper",
         },
     },
     {
@@ -479,18 +480,6 @@ function UI:ApplyPhaseVisibility()
         if settingsOpen then widget:Hide() else widget:Show() end
     end
     for _, widget in ipairs(self.recruitmentInlineButtons or {}) do widget:Hide() end
-    if self.recruitmentPreviewLabel then
-        local previewY = -93
-        local textY = -112
-        local actionY = -135
-        self.recruitmentPreviewLabel:ClearAllPoints()
-        self.recruitmentPreviewLabel:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, previewY)
-        self.previewText:ClearAllPoints()
-        self.previewText:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, textY)
-        self.previewText:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -18, textY)
-        self.recruitmentHint:ClearAllPoints()
-        self.recruitmentHint:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, actionY)
-    end
     local panelY = -158
     if self.applicantsPanel then
         self.applicantsPanel:ClearAllPoints()
@@ -988,38 +977,76 @@ function UI:CreateSettingsPanel()
 end
 
 function UI:CreateRecruitmentPanel()
-    local previewLabel = CreateLabel(self.frame, "Recruitment message", false, COLORS.muted)
-    previewLabel:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, -122)
+    local overview = CreateFrame("Frame", nil, self.frame)
+    overview:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 14, -91)
+    overview:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -14, -91)
+    overview:SetHeight(59)
+    SetBackdrop(overview, { 0.022, 0.035, 0.055, 0.98 }, COLORS.borderSoft)
 
-    local preview = CreateLabel(self.frame, "", false, { 1, 1, 1, 1 })
-    preview:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, -141)
-    preview:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -18, -141)
-    preview:SetJustifyH("LEFT")
-    self.previewText = preview
-    self.recruitmentPreviewLabel = previewLabel
+    local definitions = {
+        { key = "tank", label = "TANKS", icon = ROLE_ICONS.TANK, color = COLORS.blue },
+        { key = "heal", label = "HEALERS", icon = ROLE_ICONS.HEAL, color = COLORS.green },
+        { key = "dps", label = "DPS", icon = ROLE_ICONS.DPS, color = COLORS.gold },
+        { key = "aura", label = "AURAS", icon = AURA_ICON, color = COLORS.cyan },
+    }
+    self.rosterOverviewCards = {}
+    for index, definition in ipairs(definitions) do
+        local card = CreateFrame("Frame", nil, overview)
+        card:SetWidth(310)
+        card:SetHeight(45)
+        card:SetPoint("TOPLEFT", overview, "TOPLEFT", 8 + ((index - 1) * 318), -7)
+        SetBackdrop(card, COLORS.raised, definition.color)
 
-    local post = CreateButton(self.frame, "Post recruitment", 126, 25)
-    post:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 18, -164)
-    post:SetScript("OnClick", function() MSR:PostRecruitment(false) end)
-    self.postButton = post
+        local icon = card:CreateTexture(nil, "ARTWORK")
+        icon:SetTexture(definition.icon)
+        icon:SetWidth(36)
+        icon:SetHeight(36)
+        icon:SetPoint("LEFT", card, "LEFT", 6, 0)
+        icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+        card.icon = icon
 
-    local listen = CreateButton(self.frame, "Listening: OFF", 116, 25)
-    listen:SetPoint("LEFT", post, "RIGHT", 8, 0)
-    listen:SetScript("OnClick", function()
-        MSR:ToggleRecruitment()
-    end)
-    self.listenButton = listen
+        local title = CreateLabel(card, definition.label, true, definition.color)
+        title:SetPoint("TOPLEFT", card, "TOPLEFT", 50, -4)
+        card.titleText = title
 
-    local hint = CreateLabel(self.frame, "Accepted whisper format: Tank/Heal/DPS + Aura yes/no + Level", false, COLORS.muted)
-    hint:SetPoint("LEFT", listen, "RIGHT", 12, 0)
+        local count = CreateLabel(card, "0 / 0 FILLED", false, COLORS.text)
+        count:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 50, 5)
+        card.countText = count
 
-    local messages = CreateButton(self.frame, "Edit messages", 108, 25)
-    messages:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -18, -164)
-    messages:SetScript("OnClick", function() UI:ShowMessageTemplates() end)
-    self.recruitmentHint = hint
-    self.editMessagesButton = messages
-    self.recruitmentWidgets = { previewLabel, preview, hint }
-    self.recruitmentInlineButtons = { post, listen, messages }
+        local need = CreateLabel(card, "", true, COLORS.gold)
+        need:SetPoint("RIGHT", card, "RIGHT", -9, 0)
+        need:SetJustifyH("RIGHT")
+        card.needText = need
+        card.definition = definition
+        self.rosterOverviewCards[definition.key] = card
+    end
+
+    self.rosterOverview = overview
+    self.recruitmentWidgets = { overview }
+    self.recruitmentInlineButtons = {}
+end
+
+function UI:RefreshRosterOverview()
+    if not self.rosterOverviewCards then return end
+    local counts = MSR:GetCommittedCounts()
+    local slots = MSR.db.settings.slots
+    for key, card in pairs(self.rosterOverviewCards) do
+        local current = tonumber(counts[key]) or 0
+        local target = tonumber(slots[key]) or 0
+        local missing = math.max(0, target - current)
+        card.countText:SetText(string.format("%d / %d FILLED", current, target))
+        if missing > 0 then
+            card.needText:SetText("NEED " .. missing)
+            card.needText:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+            card:SetBackdropColor(COLORS.raised[1], COLORS.raised[2], COLORS.raised[3], COLORS.raised[4])
+            card:SetBackdropBorderColor(card.definition.color[1], card.definition.color[2], card.definition.color[3], 1)
+        else
+            card.needText:SetText("FULL")
+            card.needText:SetTextColor(COLORS.green[1], COLORS.green[2], COLORS.green[3], 1)
+            card:SetBackdropColor(0.025, 0.12, 0.075, 0.98)
+            card:SetBackdropBorderColor(COLORS.green[1], COLORS.green[2], COLORS.green[3], 1)
+        end
+    end
 end
 
 function UI:FreezeApplicantOrder()
@@ -1546,9 +1573,17 @@ function UI:CreateGroupCard(parent, group)
     card.title = title
 
     local aura = CreateLabel(card, "", false, COLORS.red)
-    aura:SetPoint("TOPRIGHT", card, "TOPRIGHT", -7, -8)
+    aura:SetPoint("TOPRIGHT", card, "TOPRIGHT", -7, -9)
     aura:SetJustifyH("RIGHT")
     card.aura = aura
+
+    local auraIcon = card:CreateTexture(nil, "ARTWORK")
+    auraIcon:SetTexture(AURA_ICON)
+    auraIcon:SetWidth(20)
+    auraIcon:SetHeight(20)
+    auraIcon:SetPoint("RIGHT", aura, "LEFT", -4, 0)
+    auraIcon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+    card.auraIcon = auraIcon
 
     card.rows = {}
     for index = 1, 5 do
@@ -1556,6 +1591,10 @@ function UI:CreateGroupCard(parent, group)
         row:SetWidth(393)
         row:SetHeight(30)
         row:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -34 - ((index - 1) * 30))
+        row.normalBackground = index % 2 == 0 and { 0.035, 0.045, 0.063, 0.88 }
+            or { 0.045, 0.055, 0.075, 0.88 }
+        row.normalBorder = { 0.10, 0.14, 0.19, 1 }
+        SetBackdrop(row, row.normalBackground, row.normalBorder)
 
         local role = CreateIconButton(row, 30, 30)
         role:SetPoint("LEFT", row, "LEFT", 0, 0)
@@ -1636,11 +1675,6 @@ function UI:CreateGroupsPanel()
 
     local title = CreateLabel(panel, "Raid groups", true, COLORS.gold)
     title:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, -10)
-
-    local counts = CreateLabel(panel, "", false, { 1, 1, 1, 1 })
-    counts:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -10, -14)
-    counts:SetJustifyH("RIGHT")
-    self.countsText = counts
 
     self.groupCards = {}
     for group = 1, 3 do
@@ -2218,7 +2252,8 @@ function UI:RefreshGroups()
         local card = self.groupCards[group]
         local hasAura = false
         for _, member in ipairs(grouped[group]) do if member.aura == true then hasAura = true break end end
-        card.aura:SetText(hasAura and "|cff55ff88AURA|r" or "|cffff5555NO AURA|r")
+        card.aura:SetText(hasAura and "|cff55ff88AURA|r" or "|cffff5555MISSING|r")
+        card.auraIcon:SetVertexColor(hasAura and 1 or 0.55, hasAura and 1 or 0.25, hasAura and 1 or 0.25, 1)
         for index = 1, 5 do
             local row = card.rows[index]
             local member = grouped[group][index]
@@ -2239,6 +2274,20 @@ function UI:RefreshGroups()
                     or readyStatus == "notready" and "|cffff5555N|r"
                     or readyStatus == "waiting" and "|cffffcc55?|r"
                     or "")
+                row.readyState = readyStatus or "neutral"
+                if readyStatus == "ready" then
+                    row:SetBackdropColor(0.025, 0.18, 0.085, 0.96)
+                    row:SetBackdropBorderColor(COLORS.green[1], COLORS.green[2], COLORS.green[3], 1)
+                elseif readyStatus == "notready" then
+                    row:SetBackdropColor(0.22, 0.035, 0.045, 0.96)
+                    row:SetBackdropBorderColor(COLORS.red[1], COLORS.red[2], COLORS.red[3], 1)
+                elseif readyStatus == "waiting" then
+                    row:SetBackdropColor(0.20, 0.13, 0.025, 0.96)
+                    row:SetBackdropBorderColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+                else
+                    row:SetBackdropColor(row.normalBackground[1], row.normalBackground[2], row.normalBackground[3], row.normalBackground[4])
+                    row:SetBackdropBorderColor(row.normalBorder[1], row.normalBorder[2], row.normalBorder[3], row.normalBorder[4])
+                end
                 row.mainTankButton.pendingMember = member
                 row.kickButton.member = member
                 row.kickButton:Show()
@@ -2254,6 +2303,9 @@ function UI:RefreshGroups()
                 row.auraButton.member = nil
                 row.auraButton:Hide()
                 row.readyText:SetText("")
+                row.readyState = "neutral"
+                row:SetBackdropColor(row.normalBackground[1], row.normalBackground[2], row.normalBackground[3], row.normalBackground[4])
+                row:SetBackdropBorderColor(row.normalBorder[1], row.normalBorder[2], row.normalBorder[3], row.normalBorder[4])
                 row.mainTankButton.pendingMember = false
                 row.kickButton.member = nil
                 row.kickButton:Hide()
@@ -2261,20 +2313,11 @@ function UI:RefreshGroups()
         end
     end
 
-    local counts = MSR:GetCounts(roster)
-    local slots = MSR.db.settings.slots
-    self.countsText:SetText(string.format(
-        "%d/%d  |T%s:14|t%d/%d  |T%s:14|t%d/%d  |T%s:14|t%d/%d  A %d/%d",
-        counts.total, MSR:GetTargetTotal(), ROLE_ICONS.TANK, counts.tank, slots.tank,
-        ROLE_ICONS.HEAL, counts.heal, slots.heal, ROLE_ICONS.DPS, counts.dps, slots.dps,
-        counts.aura, slots.aura
-    ))
     self:RefreshSecureMainTankButtons()
 end
 
 function UI:Refresh()
     if not self.frame or not MSR.db then return end
-    self.previewText:SetText(MSR:BuildRecruitmentMessage())
     self.selfRoleButton:SetText(MSR.ROLE_LABELS[MSR.char.selfRole] or "DPS")
     self.selfAuraCheck:SetChecked(MSR.char.selfAura == true)
     self.autoPostCheck:SetChecked(MSR.db.settings.autoPost == true)
@@ -2285,7 +2328,7 @@ function UI:Refresh()
         button:SetText(MSR.db.settings.auraReservation.roles[key] and ("[" .. button.roleLabel .. "]") or button.roleLabel)
         if MSR.db.settings.auraReservation.enabled then button:Enable() else button:Disable() end
     end
-    self.listenButton:SetText("Listening: " .. (MSR.char.session.listening and "ON" or "OFF"))
+    self:RefreshRosterOverview()
 
     local inManastorm = MSR:IsInManastorm()
     self:UpdateAutomaticPhase()
@@ -2295,7 +2338,6 @@ function UI:Refresh()
         or phase == "raid" and "|cff66ccffBUILDING RAID|r"
         or "|cffffff66RECRUITMENT MODE|r"
     self.statusText:SetText(phaseStatus)
-    if inManastorm then self.postButton:Disable() else self.postButton:Enable() end
     self.manastormStatusText:SetText(MSR:GetReadyCheckStatusText()
         .. "  |  Click a player's Role or Aura control to update the assignment.")
     self:RefreshGroupChatState()

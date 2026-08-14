@@ -2,7 +2,7 @@
 ## Title: Manastorm Recruiter
 ## Notes: Recruitment, roster and rebuild assistant for Ascension Manastorm groups.
 ## Author: Tomatensalat91
-## Version: 0.6.21
+## Version: 0.6.22
 ## SavedVariables: ManastormRecruiterDB
 ## SavedVariablesPerCharacter: ManastormRecruiterCharDB
 
