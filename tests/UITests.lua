@@ -126,6 +126,8 @@ ManastormRecruiter:CreateUI()
 
 local UI = ManastormRecruiter.UI
 assertTrue(UI.frame, "main frame")
+assertTrue(UI.minimapButton.icon.texture == "Interface\\AddOns\\ManastormRecruiter\\Assets\\ManastormRecruiterLogo.tga",
+    "minimap button uses the custom Manastorm Recruiter logo")
 assertTrue(UI.messageTemplatesFrame, "message template frame")
 assertTrue(UI.messageTemplatesFrame.movable, "message template frame is movable")
 assertTrue(UI.messageEditorFrame.movable, "message editor frame is movable")

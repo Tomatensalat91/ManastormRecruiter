@@ -557,22 +557,28 @@ assertEqual(automaticReplies, 2, "changed application receives a new reply")
 MSR:HandleWhisper("dps", "Clarify")
 assertEqual(MSR.char.session.applicants.clarify.aura, false, "missing Aura defaults to no Aura")
 assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, "level", "missing Aura does not start clarification")
-assertContains(lastAutomaticReply, "level", "missing level question is whispered")
+assertContains(lastAutomaticReply, "only need players with Aura", "capacity rejection is sent before asking for level")
 MSR:HandleWhisper("42", "Clarify")
 assertEqual(MSR.char.session.applicants.clarify.level, 42, "level-only answer updates applicant")
 assertEqual(MSR.char.session.applicants.clarify.pendingQuestion, nil, "clarification completes after level")
 assertContains(lastAutomaticReply, "only need players with Aura", "no-Aura applicant receives the configured Aura reservation reply")
-assertEqual(automaticReplies, 4, "level question and completion each receive one reply")
+assertEqual(automaticReplies, 3, "unchanged capacity rejection is deduplicated without a level question")
 
 MSR:HandleWhisper("dps aura yes level 42", "ExplicitAura")
 assertEqual(MSR.char.session.applicants.explicitaura.aura, true, "explicit Aura marks the applicant as Aura")
-assertEqual(automaticReplies, 5, "explicit Aura application receives one reply")
+assertEqual(automaticReplies, 4, "explicit Aura application receives one reply")
+
+counts = { tank = 0, heal = 0, dps = 10, aura = 3, unknown = 0, total = 10 }
+MSR:HandleWhisper("dps", "FullDps")
+assertContains(lastAutomaticReply, "full on DPS", "full role is rejected before asking for level")
+assertEqual(automaticReplies, 5, "full-role application receives one immediate rejection")
+counts = { tank = 0, heal = 0, dps = 8, aura = 1, unknown = 0, total = 9 }
 
 MSR.char.session.chatScanEntries = {}
 MSR.char.session.chatScanOrder = {}
 MSR.char.session.order = MSR.char.session.order or {}
 MSR.char.session.listening = true
-assertEqual(MSR:IsChatScanCandidate("LF Manastorm"), true, "LF plus Manastorm is accepted")
+assertEqual(MSR:IsChatScanCandidate("LF Manastorm"), false, "LF recruiter posts are ignored")
 assertEqual(MSR:IsChatScanCandidate("LFG Manastorms"), true, "LFG plus Manastorms is accepted")
 assertEqual(MSR:IsChatScanCandidate("LFM MS need healer"), false, "other groups looking for members are ignored")
 assertEqual(MSR:IsChatScanCandidate("LFG looms dps"), false, "loom gear terms do not identify Manastorm")
@@ -593,6 +599,22 @@ assertEqual(MSR:InviteChatScanEntry(MSR:GetChatScanEntries()[1]), true, "scanner
 assertEqual(scannerInviteName, "ScanGuy", "scanner invites the detected player")
 assertEqual(MSR.char.session.applicants.scanguy.status, "Invited", "scanner invite enters applicant workflow")
 assertEqual(#MSR:GetChatScanEntries(), 0, "invited player is removed from the chat scanner")
+local originalLocalWarning = MSR.LocalWarning
+local inviteFailureWarning
+MSR.LocalWarning = function(_, message) inviteFailureWarning = message end
+ERR_ALREADY_IN_GROUP_S = "%s is already in a group."
+assertEqual(MSR:HandleUIErrorMessage(50, "ScanGuy is already in a group."), true,
+    "asynchronous invite error is associated with the latest invite")
+assertEqual(MSR.char.session.applicants.scanguy.status, "New", "failed invite releases the pending slot")
+assertContains(MSR.char.session.applicants.scanguy.inviteError, "already in a group",
+    "failed invite reason is stored for the applicant row")
+assertContains(inviteFailureWarning, "Invite failed for ScanGuy", "failed invite is shown immediately")
+assertEqual(MSR.char.session.automaticInviteGroupAssignments.scanguy, nil,
+    "failed invite clears its persisted automatic group assignment")
+assertEqual(MSR:HandleUIErrorMessage("Another action is in progress"), false,
+    "unrelated UI errors are not attributed to an invite")
+ERR_ALREADY_IN_GROUP_S = nil
+MSR.LocalWarning = originalLocalWarning
 MSR.IsGroupLeader = originalIsGroupLeader
 
 local originalIsInManastorm = MSR.IsInManastorm

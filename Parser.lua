@@ -265,6 +265,12 @@ function MSR:HandleWhisper(message, sender)
         if applicant.pendingQuestion == "role" then
             reply = self:BuildConfiguredMessage("invalidApplicationReply", { player = applicant.name })
             replyKind = "question:role"
+        elseif capacityReply then
+            -- Once the role is known, reject applications that cannot use a
+            -- remaining slot before asking for secondary information such as
+            -- the player's level.
+            reply = capacityReply
+            replyKind = "capacity:" .. capacityReply
         elseif applicant.pendingQuestion == "level" then
             reply = self:BuildConfiguredMessage("missingLevelReply", {
                 player = applicant.name,
@@ -272,9 +278,6 @@ function MSR:HandleWhisper(message, sender)
                 aura = applicant.aura and "Yes" or "No",
             })
             replyKind = "question:level:" .. tostring(applicant.role) .. ":" .. tostring(applicant.aura)
-        elseif capacityReply then
-            reply = capacityReply
-            replyKind = "capacity:" .. capacityReply
         else
             reply = self:BuildConfiguredMessage("acceptedApplicationReply", {
                 role = self.ROLE_LABELS[applicant.role],

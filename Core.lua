@@ -577,6 +577,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         self:RegisterEvent("READY_CHECK_CONFIRM")
         self:RegisterEvent("READY_CHECK_FINISHED")
         self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        self:RegisterEvent("UI_ERROR_MESSAGE")
         self:SetScript("OnUpdate", function(_, elapsed) MSR:OnUpdate(elapsed) end)
         SLASH_MANASTORMRECRUITER1 = "/msr"
         SLASH_MANASTORMRECRUITER2 = "/manastormrecruiter"
@@ -594,11 +595,15 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "CHAT_MSG_SYSTEM" then
         local message = tostring((...))
-        local declinedName = message:match("^(.+) declines your group invitation")
-        if declinedName then
-            local applicant = MSR:GetApplicant(declinedName)
-            if applicant then MSR:SetApplicantStatus(applicant, "Declined") end
+        if not MSR:HandleUIErrorMessage(message) then
+            local declinedName = message:match("^(.+) declines your group invitation")
+            if declinedName then
+                local applicant = MSR:GetApplicant(declinedName)
+                if applicant then MSR:SetApplicantStatus(applicant, "Declined") end
+            end
         end
+    elseif event == "UI_ERROR_MESSAGE" then
+        MSR:HandleUIErrorMessage(...)
     elseif event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER"
         or event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER"
         or event == "CHAT_MSG_RAID_WARNING" then

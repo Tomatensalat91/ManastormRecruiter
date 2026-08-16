@@ -216,6 +216,80 @@ function MSR:ToggleRecruitment()
     return self:StartRecruitment()
 end
 
+local INVITE_ERROR_GLOBALS = {
+    "ERR_ALREADY_IN_GROUP_S",
+    "ERR_BAD_PLAYER_NAME_S",
+    "ERR_GROUP_FULL",
+    "ERR_INVITE_RESTRICTED",
+    "ERR_NOT_LEADER",
+    "ERR_PARTY_LFG_INVITE_RAID_LOCKED",
+    "ERR_PLAYER_BUSY_S",
+    "ERR_PLAYER_WRONG_FACTION",
+    "ERR_RAID_DISALLOWED_BY_LEVEL",
+    "ERR_RAID_GROUP_FULL",
+}
+
+local function MatchesInviteErrorTemplate(message, template, playerName)
+    if type(template) ~= "string" or template == "" then return false end
+    if message == template then return true end
+    if not template:find("%s", 1, true) then return false end
+    local ok, formatted = pcall(string.format, template, playerName or "")
+    return ok and message == formatted
+end
+
+function MSR:IsInviteErrorMessage(message, playerName)
+    message = tostring(message or "")
+    if message == "" then return false end
+    for _, globalName in ipairs(INVITE_ERROR_GLOBALS) do
+        if MatchesInviteErrorTemplate(message, _G and _G[globalName], playerName) then return true end
+    end
+
+    -- Ascension builds do not always expose every localized FrameXML constant.
+    -- Keep narrowly scoped fallbacks for the two most common invite failures.
+    local lower = string.lower(message)
+    return lower:find("already in a group", 1, true) ~= nil
+        or lower:find("bereits in einer gruppe", 1, true) ~= nil
+        or lower:find("cannot find player", 1, true) ~= nil
+        or lower:find("spieler nicht gefunden", 1, true) ~= nil
+end
+
+function MSR:TrackInviteAttempt(applicant, source)
+    if not applicant then return end
+    self.runtime = self.runtime or {}
+    self.runtime.lastInviteAttempt = {
+        key = applicant.key,
+        name = applicant.name,
+        source = source,
+        sentAt = time(),
+    }
+end
+
+function MSR:SetApplicantInviteFailure(applicant, message)
+    if not applicant then return false end
+    applicant.status = "New"
+    applicant.inviteSentAt = nil
+    applicant.inviteReminderSent = nil
+    applicant.inviteError = tostring(message or "Invite failed.")
+    applicant.updatedAt = time()
+    if self.ClearAutomaticInviteGroupAssignment then
+        self:ClearAutomaticInviteGroupAssignment(applicant.key)
+    end
+    if self.runtime then self.runtime.lastInviteAttempt = nil end
+    self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. applicant.inviteError)
+    self:RefreshUI()
+    return true
+end
+
+function MSR:HandleUIErrorMessage(errorTypeOrMessage, possibleMessage)
+    local message = type(possibleMessage) == "string" and possibleMessage or errorTypeOrMessage
+    local attempt = self.runtime and self.runtime.lastInviteAttempt
+    if not attempt or (time() - (tonumber(attempt.sentAt) or 0)) > 5 then return false end
+    if not self:IsInviteErrorMessage(message, attempt.name) then return false end
+    local applicant = self.char and self.char.session and self.char.session.applicants[attempt.key]
+    if not applicant or applicant.status ~= "Invited" then return false end
+    return self:SetApplicantInviteFailure(applicant, message)
+end
+
 function MSR:InviteApplicant(applicant)
     if not applicant then return false end
     if applicant.role == "UNKNOWN" then
@@ -242,19 +316,21 @@ function MSR:InviteApplicant(applicant)
     if numRaid == 0 and numParty > 0 and self:GetTargetTotal() > 5 and ConvertToRaid then
         pcall(ConvertToRaid)
     end
-    local ok, err = pcall(InviteUnit, applicant.name)
-    if ok then
+    applicant.inviteError = nil
+    local ok, result = pcall(InviteUnit, applicant.name)
+    if ok and result ~= false then
         applicant.status = "Invited"
         applicant.updatedAt = time()
         applicant.inviteSentAt = time()
         applicant.inviteReminderSent = false
         self:PlanAutomaticInviteGroupAssignment(applicant)
+        self:TrackInviteAttempt(applicant, "applicant")
         self:Print("Invite sent to " .. applicant.name .. ".")
     else
-        self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. tostring(err))
+        self:SetApplicantInviteFailure(applicant, result)
     end
     self:RefreshUI()
-    return ok and true or false
+    return ok and result ~= false
 end
 
 function MSR:ReleaseApplicantSlot(applicant, automatic)
@@ -404,7 +480,7 @@ function MSR:IsChatScanCandidate(message)
         "ms", "manastorm", "manastorms",
     })
     if not mentionsManastorm then return false end
-    return ChatScanHasAnyWord(clean, { "lf", "lfg" })
+    return ChatScanHasWord(clean, "lfg")
 end
 
 function MSR:GetChatScanEntries()
@@ -519,17 +595,19 @@ function MSR:InviteChatScanEntry(entry)
     if numRaid == 0 and numParty > 0 and self:GetTargetTotal() > 5 and ConvertToRaid then
         pcall(ConvertToRaid)
     end
-    local ok, err = pcall(InviteUnit, applicant.name)
-    if ok then
+    applicant.inviteError = nil
+    local ok, result = pcall(InviteUnit, applicant.name)
+    if ok and result ~= false then
         applicant.status = "Invited"
         applicant.inviteSentAt = time()
         applicant.inviteReminderSent = false
         self:RemoveChatScanEntry(entry)
         self:PlanAutomaticInviteGroupAssignment(applicant)
+        self:TrackInviteAttempt(applicant, "scanner")
         self:Print("Chat Scanner invite sent to " .. applicant.name .. ".")
     else
-        self:LocalWarning("Invite failed for " .. applicant.name .. ": " .. tostring(err))
+        self:SetApplicantInviteFailure(applicant, result)
     end
     self:RefreshUI()
-    return ok and true or false
+    return ok and result ~= false
 end

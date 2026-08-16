@@ -554,7 +554,7 @@ function UI:CreateMinimapButton()
     background:SetPoint("CENTER", button, "CENTER", 0, 0)
 
     local icon = button:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture("Interface\\Icons\\INV_Misc_GroupLooking")
+    icon:SetTexture("Interface\\AddOns\\ManastormRecruiter\\Assets\\ManastormRecruiterLogo.tga")
     icon:SetWidth(20)
     icon:SetHeight(20)
     icon:SetPoint("CENTER", button, "CENTER", 0, 0)
@@ -1172,6 +1172,9 @@ function UI:CreateApplicantRow(parent, index)
         local applicantLevel = tonumber(self.applicant.level)
         GameTooltip:AddLine(applicantLevel and ("Level " .. applicantLevel) or "Level unknown", 0.75, 0.8, 0.9)
         if self.capacityReason then GameTooltip:AddLine(self.capacityReason, 1, 0.25, 0.25, true) end
+        if self.applicant.inviteError then
+            GameTooltip:AddLine("Last invite failed: " .. self.applicant.inviteError, 1, 0.25, 0.25, true)
+        end
         local history = self.applicant.messageHistory
         if type(history) == "table" and #history > 0 then
             GameTooltip:AddLine("Recent whispers:", 0.55, 0.8, 1, true)
@@ -2176,7 +2179,8 @@ function UI:RefreshApplicants()
             row.levelText:SetText(LevelColor(level) .. "Lv " .. tostring(level or "?") .. "|r")
             SetRoleButtonIcon(row.roleButton, applicant.role)
             SetAuraButtonIcon(row.auraButton, applicant.aura)
-            local color = MSR.STATUS_COLORS[applicant.status] or "|cffffffff"
+            local color = applicant.inviteError and "|cffff7777"
+                or MSR.STATUS_COLORS[applicant.status] or "|cffffffff"
             local recentMessage = applicant.message or ""
             if type(applicant.messageHistory) == "table" and #applicant.messageHistory > 0 then
                 recentMessage = applicant.messageHistory[#applicant.messageHistory].message or recentMessage
@@ -2196,7 +2200,8 @@ function UI:RefreshApplicants()
                 row.statusText:SetText("|cffff5555" .. warning .. "|r")
             else
                 SetBackdrop(row, row.normalBackground, row.normalBorder)
-            local statusLabel = applicant.pendingQuestion == "role" and "Role?"
+            local statusLabel = applicant.inviteError and "Failed"
+                or applicant.pendingQuestion == "role" and "Role?"
                 or applicant.pendingQuestion == "level" and "Level?"
                 or applicant.needsReview and "Review" or applicant.status
             local inviteSeconds = MSR:GetInviteSecondsRemaining(applicant)
@@ -2221,7 +2226,8 @@ function UI:RefreshApplicants()
                 row.reserveButton:Enable()
                 row.rejectButton:Enable()
             end
-            row.inviteButton:SetText(applicant.status == "NoResponse" and "Reinvite" or row.inviteButton:GetText())
+            row.inviteButton:SetText(applicant.inviteError and "Retry"
+                or applicant.status == "NoResponse" and "Reinvite" or row.inviteButton:GetText())
             row.reserveButton:SetText(applicant.status == "Invited" and "Release"
                 or applicant.status == "Reserve" and "Unreserve" or "Reserve")
         else
